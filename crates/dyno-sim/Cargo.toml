@@ -1,0 +1,8 @@
+[package]
+name    = "dyno-sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dyno-types = { workspace = true }
+dyno-core  = { workspace = true }

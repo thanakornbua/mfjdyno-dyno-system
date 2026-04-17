@@ -1,0 +1,21 @@
+[Unit]
+Description=Dyno backend daemon
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=dyno
+Group=dyno
+WorkingDirectory=/var/lib/dyno
+EnvironmentFile=-/etc/dyno/dynod.env
+ExecStart=/usr/local/bin/dynod
+Restart=on-failure
+RestartSec=5
+StateDirectory=dyno
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

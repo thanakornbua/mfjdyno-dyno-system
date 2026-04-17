@@ -1,0 +1,19 @@
+[Unit]
+Description=Dyno operator console
+After=network-online.target dynod.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dyno
+Group=dyno
+WorkingDirectory=/opt/dyno-operator-console
+EnvironmentFile=-/etc/dyno/operator-console.env
+ExecStart=/usr/local/bin/dyno-operator-console
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target

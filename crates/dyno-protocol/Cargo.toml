@@ -1,0 +1,9 @@
+[package]
+name    = "dyno-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dyno-types = { workspace = true }
+serde      = { workspace = true }
+thiserror  = { workspace = true }

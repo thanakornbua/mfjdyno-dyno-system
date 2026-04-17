@@ -1,0 +1,14 @@
+{
+  "engine_pulse_pin": 4,
+  "engine_pulses_per_rev": 1.0,
+  "engine_edge_mode": "rising",
+  "encoder_pin_a": 5,
+  "encoder_ppr": 60,
+  "can_rx_pin": 21,
+  "can_tx_pin": 22,
+  "can_bitrate": 500000,
+  "uart_tx_pin": 17,
+  "uart_rx_pin": 16,
+  "uart_baud": 921600,
+  "telemetry_rate_hz": 50
+}
