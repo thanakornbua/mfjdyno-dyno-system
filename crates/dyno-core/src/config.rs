@@ -63,6 +63,12 @@ pub struct Config {
     pub serial_port: String,
     /// Baud rate; must match the ESP32 firmware setting.
     pub serial_baud: u32,
+    /// SocketCAN interface created by systemd/udev for production AFR.
+    pub can_iface: String,
+    /// Runtime profile selector. Production means ESP32 JSON + SocketCAN + no Modbus AFR.
+    pub profile: String,
+    /// Legacy Modbus AFR path. Disabled by default for production.
+    pub modbus_afr_enabled: bool,
 
     // ── WebSocket ────────────────────────────────────────────────────────────
     /// `host:port` the WebSocket server will bind to.
@@ -118,11 +124,14 @@ impl Config {
     /// a standard Raspberry Pi 5 + ESP32 setup.
     pub fn from_env() -> Self {
         Self {
-            serial_port:          env_str("DYNO_SERIAL_PORT",        "/dev/serial0"),
-            serial_baud:          env_parse("DYNO_SERIAL_BAUD",      921_600u32),
+            serial_port:          env_str("DYNO_SERIAL_PORT",        "/dev/ttyUSB0"),
+            serial_baud:          env_parse("DYNO_SERIAL_BAUD",      115_200u32),
+            can_iface:            env_str("DYNO_CAN_IFACE",          "can0"),
+            profile:              env_str("DYNO_PROFILE",            "production"),
+            modbus_afr_enabled:   env_parse("DYNO_MODBUS_AFR_ENABLED", false),
             ws_bind:              env_str("DYNO_WS_BIND",            "0.0.0.0:9000"),
             api_bind:             env_str("DYNO_API_BIND",           "0.0.0.0:9001"),
-            db_path:              env_str("DYNO_DB_PATH",            "dyno.db"),
+            db_path:              env_str_any(&["DYNO_STORAGE_DB_PATH", "DYNO_DB_PATH"], "dyno.db"),
             esp32_config_path:    env_str("DYNO_ESP32_CONFIG_PATH",  "esp32-device-config.json"),
             esp32_applied_config_path: env_str("DYNO_ESP32_APPLIED_CONFIG_PATH", "esp32-last-applied.json"),
             esp32_command_timeout_ms: env_parse("DYNO_ESP32_COMMAND_TIMEOUT_MS", 1_500u64),
@@ -146,6 +155,9 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  serial_port          = {}", self.serial_port)?;
         writeln!(f, "  serial_baud          = {}", self.serial_baud)?;
+        writeln!(f, "  can_iface            = {}", self.can_iface)?;
+        writeln!(f, "  profile              = {}", self.profile)?;
+        writeln!(f, "  modbus_afr_enabled   = {}", self.modbus_afr_enabled)?;
         writeln!(f, "  ws_bind              = {}", self.ws_bind)?;
         writeln!(f, "  api_bind             = {}", self.api_bind)?;
         writeln!(f, "  db_path              = {}", self.db_path)?;
@@ -171,6 +183,12 @@ impl fmt::Display for Config {
 
 fn env_str(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_owned())
+}
+
+fn env_str_any(keys: &[&str], default: &str) -> String {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .unwrap_or_else(|| default.to_owned())
 }
 
 fn env_parse<T>(key: &str, default: T) -> T
@@ -202,8 +220,12 @@ mod tests {
         // defaults match the expected production values.
         env::remove_var("DYNO_SERIAL_PORT");
         env::remove_var("DYNO_SERIAL_BAUD");
+        env::remove_var("DYNO_CAN_IFACE");
+        env::remove_var("DYNO_PROFILE");
+        env::remove_var("DYNO_MODBUS_AFR_ENABLED");
         env::remove_var("DYNO_WS_BIND");
         env::remove_var("DYNO_API_BIND");
+        env::remove_var("DYNO_STORAGE_DB_PATH");
         env::remove_var("DYNO_DB_PATH");
         env::remove_var("DYNO_ESP32_CONFIG_PATH");
         env::remove_var("DYNO_ESP32_APPLIED_CONFIG_PATH");
@@ -221,8 +243,11 @@ mod tests {
         env::remove_var("DYNO_RECORD_RPM");
         env::remove_var("DYNO_STOP_RPM");
         let cfg = Config::from_env();
-        assert_eq!(cfg.serial_port, "/dev/serial0");
-        assert_eq!(cfg.serial_baud, 921_600);
+        assert_eq!(cfg.serial_port, "/dev/ttyUSB0");
+        assert_eq!(cfg.serial_baud, 115_200);
+        assert_eq!(cfg.can_iface, "can0");
+        assert_eq!(cfg.profile, "production");
+        assert!(!cfg.modbus_afr_enabled);
         assert_eq!(cfg.ws_bind, "0.0.0.0:9000");
         assert_eq!(cfg.api_bind, "0.0.0.0:9001");
         assert_eq!(cfg.db_path, "dyno.db");
@@ -248,7 +273,11 @@ mod tests {
         let _guard = env_lock().lock().expect("env lock");
         // Safety: tests run in the same process; set then immediately unset.
         env::set_var("DYNO_SERIAL_BAUD", "115200");
+        env::set_var("DYNO_CAN_IFACE", "can1");
+        env::set_var("DYNO_PROFILE", "bench");
+        env::set_var("DYNO_MODBUS_AFR_ENABLED", "true");
         env::set_var("DYNO_API_BIND", "127.0.0.1:9101");
+        env::set_var("DYNO_STORAGE_DB_PATH", "/tmp/runs-rust.db");
         env::set_var("DYNO_ESP32_CONFIG_PATH", "/tmp/esp32-config.json");
         env::set_var("DYNO_ESP32_APPLIED_CONFIG_PATH", "/tmp/esp32-state.json");
         env::set_var("DYNO_ESP32_COMMAND_TIMEOUT_MS", "2500");
@@ -261,7 +290,11 @@ mod tests {
         env::set_var("DYNO_SAMPLE_WINDOW_MS", "125");
         let cfg = Config::from_env();
         env::remove_var("DYNO_SERIAL_BAUD");
+        env::remove_var("DYNO_CAN_IFACE");
+        env::remove_var("DYNO_PROFILE");
+        env::remove_var("DYNO_MODBUS_AFR_ENABLED");
         env::remove_var("DYNO_API_BIND");
+        env::remove_var("DYNO_STORAGE_DB_PATH");
         env::remove_var("DYNO_ESP32_CONFIG_PATH");
         env::remove_var("DYNO_ESP32_APPLIED_CONFIG_PATH");
         env::remove_var("DYNO_ESP32_COMMAND_TIMEOUT_MS");
@@ -273,7 +306,11 @@ mod tests {
         env::remove_var("DYNO_ROLLER_INERTIA_KG_M2");
         env::remove_var("DYNO_SAMPLE_WINDOW_MS");
         assert_eq!(cfg.serial_baud, 115_200);
+        assert_eq!(cfg.can_iface, "can1");
+        assert_eq!(cfg.profile, "bench");
+        assert!(cfg.modbus_afr_enabled);
         assert_eq!(cfg.api_bind, "127.0.0.1:9101");
+        assert_eq!(cfg.db_path, "/tmp/runs-rust.db");
         assert_eq!(cfg.esp32_config_path, "/tmp/esp32-config.json");
         assert_eq!(cfg.esp32_applied_config_path, "/tmp/esp32-state.json");
         assert_eq!(cfg.esp32_command_timeout_ms, 2_500);

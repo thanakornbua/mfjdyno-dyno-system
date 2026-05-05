@@ -14,8 +14,11 @@
 
 - `DYNO_DB_PATH`: SQLite database path. Use `/var/lib/dyno/dyno.db` in production.
 - `DYNO_SOURCE_MODE`: `live` or `replay`.
-- `DYNO_SERIAL_PORT`: UART device path for live ingest, usually `/dev/serial0`.
-- `DYNO_SERIAL_BAUD`: UART baud rate, usually `921600`.
+- `DYNO_PROFILE`: use `production` for ESP32 JSON UART + SocketCAN AEM UEGO + no Modbus AFR.
+- `DYNO_SERIAL_PORT`: UART device path for live JSON ingest, usually `/dev/ttyUSB0`.
+- `DYNO_SERIAL_BAUD`: UART baud rate, usually `115200`.
+- `DYNO_CAN_IFACE`: SocketCAN interface for AEM UEGO AFR, usually `can0`.
+- `DYNO_MODBUS_AFR_ENABLED`: legacy AFR path flag. Keep `false` in production.
 - `DYNO_BME280_ENABLED`: `true` or `false`.
 - `DYNO_WS_BIND`: websocket bind address, usually `0.0.0.0:9000`.
 - `DYNO_API_BIND`: HTTP API bind address, usually `0.0.0.0:9001`.
@@ -35,12 +38,24 @@
 ## Install layout
 
 1. Install `dynod` to `/usr/local/bin/dynod`.
-2. Copy [dynod.service](/home/thanakornb/dyno-backend/deploy/systemd/dynod.service) to `/etc/systemd/system/dynod.service`.
-3. Copy [dynod.env.example](/home/thanakornb/dyno-backend/deploy/env/dynod.env.example) to `/etc/dyno/dynod.env` and edit it.
-4. Install the Java operator console distribution under `/opt/dyno-operator-console`.
-5. Copy [run-dyno-operator-console.sh](/home/thanakornb/dyno-backend/deploy/bin/run-dyno-operator-console.sh) to `/usr/local/bin/dyno-operator-console` and make it executable.
-6. Copy [dyno-operator-console.env.example](/home/thanakornb/dyno-backend/deploy/env/dyno-operator-console.env.example) to `/etc/dyno/operator-console.env` and edit it.
-7. Optional: copy [dyno-operator-console.service](/home/thanakornb/dyno-backend/deploy/systemd/dyno-operator-console.service) to `/etc/systemd/system/dyno-operator-console.service` if the target host runs the UI under systemd.
+2. Install CAN support: `sudo apt install can-utils`.
+3. Copy [dyno-canable.service](/home/thanakornb/dyno-system/deploy/systemd/dyno-canable.service) to `/etc/systemd/system/dyno-canable.service`.
+4. Copy [dynod.service](/home/thanakornb/dyno-system/deploy/systemd/dynod.service) to `/etc/systemd/system/dynod.service`.
+5. Copy [dyno.env](/home/thanakornb/dyno-system/deploy/env/dyno.env) to `/etc/dyno/dyno.env` and edit it.
+6. Enable CAN and backend services:
+
+```sh
+sudo systemctl enable --now dyno-canable.service
+sudo systemctl enable --now dynod.service
+```
+
+7. If the target names the backend service `dyno-backend.service`, install the same backend unit under that name and enable it with `sudo systemctl enable --now dyno-backend.service`.
+
+8. Copy [dynod.env.example](/home/thanakornb/dyno-system/deploy/env/dynod.env.example) to `/etc/dyno/dynod.env` only for host-specific overrides.
+9. Install the Java operator console distribution under `/opt/dyno-operator-console`.
+10. Copy [run-dyno-operator-console.sh](/home/thanakornb/dyno-system/deploy/bin/run-dyno-operator-console.sh) to `/usr/local/bin/dyno-operator-console` and make it executable.
+11. Copy [dyno-operator-console.env.example](/home/thanakornb/dyno-system/deploy/env/dyno-operator-console.env.example) to `/etc/dyno/operator-console.env` and edit it.
+12. Optional: copy [dyno-operator-console.service](/home/thanakornb/dyno-system/deploy/systemd/dyno-operator-console.service) to `/etc/systemd/system/dyno-operator-console.service` if the target host runs the UI under systemd.
 
 ## Common commands
 
@@ -67,13 +82,44 @@
 
 ```dotenv
 RUST_LOG=info
-DYNO_DB_PATH=/var/lib/dyno/dyno.db
+DYNO_STORAGE_DB_PATH=/var/lib/dyno/runs-rust.db
+DYNO_PROFILE=production
 DYNO_SOURCE_MODE=live
-DYNO_SERIAL_PORT=/dev/serial0
-DYNO_SERIAL_BAUD=921600
+DYNO_SERIAL_PORT=/dev/ttyUSB0
+DYNO_SERIAL_BAUD=115200
+DYNO_CAN_IFACE=can0
+DYNO_MODBUS_AFR_ENABLED=false
 DYNO_BME280_ENABLED=true
 DYNO_WS_BIND=0.0.0.0:9000
 DYNO_API_BIND=0.0.0.0:9001
+```
+
+## ESP32 JSON telemetry
+
+In live JSON mode, ESP32 `bme_valid=true` ambient values feed `ambient_temp_c`, `humidity_pct`, and `pressure_hpa`; invalid BME frames fall back to backend stub ambient values.
+
+Flash the Arduino sketch:
+
+```sh
+tools/flash-esp32.sh
+```
+
+Read raw newline-delimited JSON telemetry:
+
+```sh
+python3 -m serial.tools.miniterm /dev/ttyUSB0 115200
+```
+
+or:
+
+```sh
+stty -F /dev/ttyUSB0 115200 raw -echo && cat /dev/ttyUSB0
+```
+
+Run the backend against the ESP32 telemetry port:
+
+```sh
+DYNO_SERIAL_PORT=/dev/ttyUSB0 DYNO_SERIAL_BAUD=115200 cargo run -p dyno-core
 ```
 
 ## Replay mode example

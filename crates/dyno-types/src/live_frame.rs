@@ -38,6 +38,18 @@ pub struct LiveFrame {
     /// Lambda (AFR normalised to stoichiometric; 1.0 = stoich).
     pub lambda: Option<f32>,
 
+    // ── SocketCAN AFR acquisition ───────────────────────────────────────────
+    /// `true` when the configured SocketCAN interface exists and is readable.
+    pub can_present: bool,
+    /// Count of decoded AEM UEGO CAN frames since the current CAN reader opened.
+    pub can_frames_seen: u64,
+    /// `true` when `afr` and `lambda` are usable live measurements.
+    pub afr_valid: bool,
+    /// `true` when CAN transport/AEM frame decoding is healthy, even if AFR is not usable.
+    pub can_valid: bool,
+    /// Operator-facing CAN/AFR state summary.
+    pub can_status_text: String,
+
     // ── Ambient (BME280, Pi-side I2C) ─────────────────────────────────────
     pub ambient_temp_c: Option<f32>,
     pub humidity_pct: Option<f32>,
@@ -67,6 +79,11 @@ impl LiveFrame {
             correction_factor: 1.0,
             afr: None,
             lambda: None,
+            can_present: false,
+            can_frames_seen: 0,
+            afr_valid: false,
+            can_valid: false,
+            can_status_text: "CAN missing".to_owned(),
             ambient_temp_c: None,
             humidity_pct: None,
             pressure_hpa: None,

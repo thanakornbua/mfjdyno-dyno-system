@@ -547,6 +547,9 @@ mod tests {
         let config = Config {
             serial_port: "/dev/null".to_owned(),
             serial_baud: 921_600,
+            can_iface: "can0".to_owned(),
+            profile: "production".to_owned(),
+            modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
             db_path: "test.sqlite".to_owned(),

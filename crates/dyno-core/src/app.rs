@@ -8,8 +8,9 @@ use dyno_types::LiveFrame;
 
 use crate::{
     api::ApiTask,
-    bme280::Bme280Task,
+    bme280::{AmbientSample, Bme280Task},
     calibration::{CalibrationProfile, validate_profile},
+    can::{CanSample, CanTask},
     config::{Config, SourceMode},
     esp32_config::Esp32ConfigManager,
     fusion::FusionTask,
@@ -36,6 +37,7 @@ pub struct App {
     pub startup_health: StartupHealth,
     // ── Active tasks ─────────────────────────────────────────────────────────
     _serial: Option<SerialTask>,
+    _can: Option<CanTask>,
     _replay: Option<ReplayTask>,
     // Retained until the WebSocket layer consumes the live stream directly.
     _live_rx: watch::Receiver<LiveFrame>,
@@ -104,24 +106,37 @@ impl App {
         );
         let state = StateMachine::new();
 
-        let (serial, replay, bme280, fusion) = match config.source_mode {
+        let (serial, can, replay, bme280, fusion) = match config.source_mode {
             SourceMode::Live => {
                 let esp32_config_manager = Esp32ConfigManager::from_runtime_config(&config);
-                let sync_result = esp32_config_manager
+                match esp32_config_manager
                     .synchronize_startup(&config.serial_port, config.serial_baud)
                     .await
-                    .map_err(|err| anyhow::anyhow!("ESP32 config sync failed during startup: {err}"))?;
-                info!(
-                    device_name = %sync_result.device_info.device_name,
-                    firmware = format_args!(
-                        "{}.{}.{}",
-                        sync_result.device_info.firmware_major,
-                        sync_result.device_info.firmware_minor,
-                        sync_result.device_info.firmware_patch
-                    ),
-                    status = ?sync_result.status,
-                    "completed ESP32 config sync"
-                );
+                {
+                    Ok(sync_result) => {
+                        info!(
+                            device_name = %sync_result.device_info.device_name,
+                            firmware = format_args!(
+                                "{}.{}.{}",
+                                sync_result.device_info.firmware_major,
+                                sync_result.device_info.firmware_minor,
+                                sync_result.device_info.firmware_patch
+                            ),
+                            status = ?sync_result.status,
+                            "completed ESP32 config sync"
+                        );
+                    }
+                    Err(err) if err.is_retryable() => {
+                        warn!(
+                            "ESP32 config sync skipped during startup because the serial link is not ready: {err}"
+                        );
+                    }
+                    Err(err) => {
+                        return Err(anyhow::anyhow!(
+                            "ESP32 config sync failed during startup: {err}"
+                        ));
+                    }
+                }
 
                 // ── Frame watch channel ───────────────────────────────────────
                 //
@@ -129,22 +144,25 @@ impl App {
                 // overwrites it on every new frame; consumers read the latest
                 // value without queuing or drop policy.
                 let (frame_tx, frame_rx) = watch::channel::<DynoFrameV1>(DynoFrameV1::default());
-                let serial = SerialTask::spawn(&config, frame_tx);
-                let bme280 = Bme280Task::spawn(config.bme280_enabled);
-                let ambient_rx = bme280.subscribe();
+                let (ambient_tx, ambient_rx) =
+                    watch::channel::<AmbientSample>(AmbientSample::stub());
+                let (can_tx, can_rx) = watch::channel::<CanSample>(CanSample::missing());
+                let serial = SerialTask::spawn(&config, frame_tx, ambient_tx);
+                let can = CanTask::spawn(config.can_iface.clone(), can_tx);
                 let fusion = FusionTask::spawn(
                     frame_rx,
                     ambient_rx,
+                    can_rx,
                     live_tx,
                     config.correction_mode,
                     calibration_rx.clone(),
                 );
-                (Some(serial), None, Some(bme280), Some(fusion))
+                (Some(serial), Some(can), None, None, Some(fusion))
             }
             SourceMode::Replay => {
                 info!("starting in replay mode; UART, BME280, and fusion tasks are bypassed");
                 let replay = ReplayTask::spawn(calibration_rx.clone(), live_tx);
-                (None, Some(replay), None, None)
+                (None, None, Some(replay), None, None)
             }
         };
 
@@ -153,6 +171,7 @@ impl App {
             state,
             startup_health,
             _serial: serial,
+            _can: can,
             _replay: replay,
             _live_rx: live_rx,
             _calibration_rx: calibration_rx,
@@ -184,6 +203,9 @@ mod tests {
         Config {
             serial_port: "/dev/null".to_owned(),
             serial_baud: 921_600,
+            can_iface: "can0".to_owned(),
+            profile: "production".to_owned(),
+            modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
             db_path: db_path.to_owned(),

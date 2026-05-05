@@ -65,6 +65,7 @@ namespace Encoder {
     // All pure reads; no side effects; valid only after at least one tick() call.
     const EncoderState& get_state();
 
+    int16_t get_count();
     int32_t get_count_total();  // state().count_total
     int16_t get_last_delta();   // state().delta
     int32_t get_rpm_x10();      // state().rpm_x10 — preferred integer path

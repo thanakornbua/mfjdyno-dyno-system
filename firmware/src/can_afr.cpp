@@ -24,7 +24,7 @@
 //
 //  TODO: set AFR_EXTENDED_ID = true if your controller uses
 //        29-bit (extended) arbitration IDs.
-static constexpr bool AFR_EXTENDED_ID = false;   // false = 11-bit standard
+static constexpr bool AFR_EXTENDED_ID = true;    // AEM UEGO uses 29-bit extended ID
 
 //  ── Payload word width and byte order ───────────────────────
 //  false = extract a single byte (uint8_t) at can_afr_byte_offset.
@@ -32,11 +32,11 @@ static constexpr bool AFR_EXTENDED_ID = false;   // false = 11-bit standard
 //
 //  TODO: set AFR_TWO_BYTE = true if your controller encodes AFR
 //        as a 16-bit value (e.g. Haltech IC-7 lambda × 1000 word).
-static constexpr bool AFR_TWO_BYTE  = false;
+static constexpr bool AFR_TWO_BYTE  = true;   // AEM UEGO: 16-bit lambda word
 
 //  TODO: set AFR_BIG_ENDIAN = true if the 16-bit word is sent
 //        big-endian (Motorola byte order).  Ignored when AFR_TWO_BYTE = false.
-static constexpr bool AFR_BIG_ENDIAN = false;    // false = little-endian (Intel)
+static constexpr bool AFR_BIG_ENDIAN = true;     // AEM UEGO: Motorola byte order
 
 //  ── Linear scaling ──────────────────────────────────────────
 //  Formula (integer, no float in hot path):
@@ -53,9 +53,11 @@ static constexpr bool AFR_BIG_ENDIAN = false;    // false = little-endian (Intel
 //          PLX SM-AFR: raw × 0.0489 + 7.35  → SCALE_NUM=489, SCALE_DEN=10000, OFFSET_x100=735
 //          AEM 30-0300: raw × 0.1           → default below
 //          Haltech (16-bit lambda × 1000):   AFR_TWO_BYTE=true, SCALE_NUM=147, SCALE_DEN=100000, OFFSET_x100=0
-static constexpr uint32_t AFR_SCALE_NUM   = 1u;     // numerator
-static constexpr uint32_t AFR_SCALE_DEN   = 10u;    // denominator  → effective scale = 0.1
-static constexpr int32_t  AFR_OFFSET_x100 = 0;      // AFR offset × 100
+// AEM UEGO: lambda = raw * 0.0001 → afr = lambda * 14.65
+// afr_x100 = raw * 0.1465 = raw * 1465 * 100 / 1000000
+static constexpr uint32_t AFR_SCALE_NUM   = 1465u;
+static constexpr uint32_t AFR_SCALE_DEN   = 1000000u;
+static constexpr int32_t  AFR_OFFSET_x100 = 0;
 
 //  ── Stoichiometric AFR for lambda calculation ────────────────
 //  lambda = AFR / stoich_AFR
@@ -67,7 +69,7 @@ static constexpr int32_t  AFR_OFFSET_x100 = 0;      // AFR offset × 100
 //    E85:                STOICH_x100 =  906
 //    Diesel:             STOICH_x100 = 1460
 //    Methanol:           STOICH_x100 =  658
-static constexpr uint16_t STOICH_x100 = 1470u;      // petrol
+static constexpr uint16_t STOICH_x100 = 1465u;      // AEM UEGO stoich (14.65)
 
 //  ── Freshness timeout ────────────────────────────────────────
 //  Declare data stale after this many milliseconds with no matching frame.
@@ -91,6 +93,7 @@ static constexpr uint8_t RX_DRAIN_MAX = 16u;
 static bool     s_driver_installed = false;
 static uint16_t s_afr_x100        = 0;
 static uint16_t s_lambda_x1000    = 0;
+static uint8_t  s_voltage_x10     = 0;       // byte4 * 0.1 V, scaled ×10
 static bool     s_ever_received   = false;   // guards against millis()==0 at boot
 static uint32_t s_last_rx_ms      = 0;
 
@@ -175,15 +178,19 @@ static void process_frame(const twai_message_t& msg,
                                           : (live_byte_offset + 1u);
     if (msg.data_length_code < required_bytes) return;
 
-    // ---- Decode ----
+    // ---- Decode lambda / AFR ----
     uint16_t raw        = extract_raw(msg, live_byte_offset);
     uint16_t afr_x100   = raw_to_afr_x100(raw);
     uint16_t lam_x1000  = afr_x100_to_lambda_x1000(afr_x100);
 
+    // ---- Decode wideband sensor voltage (byte4 * 0.1 V) ----
+    uint8_t voltage_x10 = (msg.data_length_code >= 5u) ? msg.data[4] : 0u;
+
     // ---- Commit snapshot ----
-    s_afr_x100     = afr_x100;
-    s_lambda_x1000 = lam_x1000;
-    s_last_rx_ms   = millis();
+    s_afr_x100      = afr_x100;
+    s_lambda_x1000  = lam_x1000;
+    s_voltage_x10   = voltage_x10;
+    s_last_rx_ms    = millis();
     s_ever_received = true;
 }
 
@@ -194,10 +201,11 @@ namespace CanAfr {
 
 // ---- init() ----
 void init(const DynoConfig& cfg) {
-    s_afr_x100     = 0;
-    s_lambda_x1000 = 0;
+    s_afr_x100      = 0;
+    s_lambda_x1000  = 0;
+    s_voltage_x10   = 0;
     s_ever_received = false;
-    s_last_rx_ms   = 0;
+    s_last_rx_ms    = 0;
 
     twai_general_config_t g_cfg = TWAI_GENERAL_CONFIG_DEFAULT(
         (gpio_num_t)cfg.can_tx_pin,
@@ -336,6 +344,12 @@ uint16_t get_lambda_x1000() {
 
 float get_afr() {
     return (float)get_afr_x100() / 100.0f;
+}
+
+float get_voltage() {
+    if (!s_ever_received) return 0.0f;
+    if ((millis() - s_last_rx_ms) >= AFR_TIMEOUT_MS) return 0.0f;
+    return (float)s_voltage_x10 / 10.0f;
 }
 
 bool is_valid() {

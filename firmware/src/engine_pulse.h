@@ -71,6 +71,7 @@ namespace EnginePulse {
     // All pure reads; no side effects; valid only after at least one update() call.
     const EnginePulseState& get_state();
 
+    uint32_t get_interval_us();
     uint32_t get_period_us();       // snapshot().period_us
     int32_t  get_rpm_x10();         // snapshot().rpm_x10 — preferred integer path
     float    get_rpm();             // (float)get_rpm_x10() / 10.0f — backward compat

@@ -17,6 +17,7 @@ use dyno_types::{AlertLevel, Esp32TelemetryStatus, FaultCode, LiveAlerts, LiveFr
 use crate::{
     bme280::AmbientSample,
     calibration::CalibrationProfile,
+    can::CanSample,
     correction::{correction_factor, CorrectionMode},
     physics::{
         angular_accel_rad_s2, apply_correction, inertial_power_w, roller_rpm_from_encoder_delta,
@@ -50,6 +51,7 @@ impl FusionPhysicsConfig {
 pub struct FusionTask {
     frame_rx: watch::Receiver<DynoFrameV1>,
     ambient_rx: watch::Receiver<AmbientSample>,
+    can_rx: watch::Receiver<CanSample>,
     tx: watch::Sender<LiveFrame>,
     correction_mode: CorrectionMode,
     calibration_rx: watch::Receiver<CalibrationProfile>,
@@ -60,6 +62,7 @@ impl FusionTask {
     pub fn spawn(
         frame_rx: watch::Receiver<DynoFrameV1>,
         ambient_rx: watch::Receiver<AmbientSample>,
+        can_rx: watch::Receiver<CanSample>,
         tx: watch::Sender<LiveFrame>,
         correction_mode: CorrectionMode,
         calibration_rx: watch::Receiver<CalibrationProfile>,
@@ -67,6 +70,7 @@ impl FusionTask {
         let task = Self {
             frame_rx,
             ambient_rx,
+            can_rx,
             tx,
             correction_mode,
             calibration_rx,
@@ -75,6 +79,7 @@ impl FusionTask {
         tokio::spawn(fusion_task_loop(
             task.frame_rx.clone(),
             task.ambient_rx.clone(),
+            task.can_rx.clone(),
             task.tx.clone(),
             task.correction_mode,
             task.calibration_rx.clone(),
@@ -93,6 +98,7 @@ impl FusionTask {
 async fn fusion_task_loop(
     mut frame_rx: watch::Receiver<DynoFrameV1>,
     ambient_rx: watch::Receiver<AmbientSample>,
+    can_rx: watch::Receiver<CanSample>,
     tx: watch::Sender<LiveFrame>,
     correction_mode: CorrectionMode,
     calibration_rx: watch::Receiver<CalibrationProfile>,
@@ -107,6 +113,7 @@ async fn fusion_task_loop(
 
                 let input = frame_rx.borrow().clone();
                 let ambient = *ambient_rx.borrow();
+                let can = can_rx.borrow().clone();
                 let physics = {
                     let calibration = calibration_rx.borrow();
                     FusionPhysicsConfig::from_calibration(&calibration)
@@ -114,6 +121,7 @@ async fn fusion_task_loop(
                 let live = fuse_frame(
                     &input,
                     ambient,
+                    &can,
                     correction_mode,
                     physics,
                     &mut physics_state,
@@ -169,6 +177,7 @@ struct PhysicsState {
 fn fuse_frame(
     frame: &DynoFrameV1,
     ambient: AmbientSample,
+    can: &CanSample,
     correction_mode: CorrectionMode,
     physics: FusionPhysicsConfig,
     physics_state: &mut PhysicsState,
@@ -237,13 +246,17 @@ fn fuse_frame(
         physics_state.prev_ts_us = Some(frame.ts_us);
     }
 
-    let afr = if esp32_status.afr_valid {
+    let afr = if can.afr_valid {
+        can.afr
+    } else if esp32_status.afr_valid {
         scaled_value_x100(frame.afr_scaled_x100)
     } else {
         None
     };
 
-    let lambda = if esp32_status.lambda_valid {
+    let lambda = if can.afr_valid {
+        can.lambda
+    } else if esp32_status.lambda_valid {
         scaled_value_x1000(frame.lambda_scaled_x1000)
     } else {
         None
@@ -259,6 +272,11 @@ fn fuse_frame(
         torque_nm: corrected_torque_nm,
         afr,
         lambda,
+        can_present: can.can_present,
+        can_frames_seen: can.can_frames_seen,
+        afr_valid: can.afr_valid || esp32_status.afr_valid,
+        can_valid: can.can_valid,
+        can_status_text: can.status_text.clone(),
         correction_factor: correction.factor,
         ambient_temp_c: Some(ambient.temp_c),
         humidity_pct: Some(ambient.humidity_pct),
@@ -412,6 +430,7 @@ mod tests {
                 humidity_pct: 55.0,
                 pressure_hpa: 1013.25,
             },
+            &CanSample::missing(),
             CorrectionMode::None,
             FusionPhysicsConfig {
                 roller_diameter_m: 0.318,
@@ -448,6 +467,7 @@ mod tests {
                 humidity_pct: 55.0,
                 pressure_hpa: 1013.25,
             },
+            &CanSample::missing(),
             CorrectionMode::None,
             FusionPhysicsConfig {
                 roller_diameter_m: 0.318,

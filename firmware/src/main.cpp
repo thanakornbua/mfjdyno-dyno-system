@@ -5,6 +5,7 @@
 #include "engine_pulse.h"
 #include "encoder.h"
 #include "can_afr.h"
+#include "bme280_sensor.h"
 #include "telemetry.h"
 
 // ============================================================
@@ -141,7 +142,7 @@ void setup() {
     // USB serial for human-readable debug output only.
     // No telemetry or protocol frames on Serial — only on Serial2.
     Serial.begin(115200);
-    delay(100);   // allow USB CDC enumeration to settle on first boot
+    delay(1000);   // allow USB CDC enumeration to settle on first boot
 
     Serial.println();
     Serial.println("============================================");
@@ -189,6 +190,11 @@ void setup() {
     } else {
         Serial.println("[main] CAN/TWAI FAILED — FLT_CAN_INIT set");
         Telemetry::set_fault(FLT_CAN_INIT);
+    }
+
+    BmeSensor::init();
+    if (!BmeSensor::is_init()) {
+        Serial.println("[main] BME280 FAILED — bme_valid will be false");
     }
 
     s_last_telem_ms = millis();
@@ -270,4 +276,5 @@ void loop() {
         s_last_telem_ms = now_ms;
         sensor_update();
     }
+
 }

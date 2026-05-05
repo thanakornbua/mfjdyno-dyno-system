@@ -1,0 +1,15 @@
+# Build outputs
+target/
+java/build/
+operator-console/build/
+firmware/.pio/
+firmware/firmware-test/.pio/
+
+# Tool and dependency caches
+.gradle/
+java/.gradle/
+operator-console/.gradle/
+.cache/
+*.cache
+CACHEDIR.TAG
+

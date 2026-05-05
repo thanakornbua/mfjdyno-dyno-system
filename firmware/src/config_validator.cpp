@@ -67,7 +67,7 @@ static ValidationResult validate_fields(const DynoConfig& c) {
     }
     if (c.engine_pulses_per_rev < 1 || c.engine_pulses_per_rev > 120)
         FAIL(INVALID_PPR_ENG, ENGINE_PPR);
-    if (static_cast<uint8_t>(c.engine_edge_mode) > static_cast<uint8_t>(EdgeMode::BOTH))
+    if (static_cast<uint8_t>(c.engine_edge_mode) > static_cast<uint8_t>(EdgeMode::EDGE_BOTH))
         FAIL(INVALID_EDGE_MODE, ENGINE_EDGE_MODE);
 
     // Encoder

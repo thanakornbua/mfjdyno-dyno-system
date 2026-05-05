@@ -1,0 +1,96 @@
+plugins {
+    id 'application'
+}
+
+sourceCompatibility = 21
+targetCompatibility = 21
+mainClassName = 'com.dyno.Main'
+
+repositories {
+    mavenCentral()
+}
+
+def osName = System.getProperty('os.name').toLowerCase()
+def javafxPlatform = osName.contains('win') ? 'win' : (osName.contains('mac') ? 'mac' : 'linux')
+
+sourceSets {
+    thaiPdfHarness {
+        java {
+            srcDir 'harness/thai-pdf/src/main/java'
+        }
+        resources {
+            srcDir 'harness/thai-pdf/src/main/resources'
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+    implementation 'org.openjfx:javafx-base:21.0.4'
+    implementation "org.openjfx:javafx-base:21.0.4:${javafxPlatform}"
+    implementation 'org.openjfx:javafx-graphics:21.0.4'
+    implementation "org.openjfx:javafx-controls:21.0.4:${javafxPlatform}"
+    implementation "org.openjfx:javafx-graphics:21.0.4:${javafxPlatform}"
+    implementation 'org.openjfx:javafx-controls:21.0.4'
+
+    implementation 'com.itextpdf:kernel:7.2.5'
+    implementation 'com.itextpdf:layout:7.2.5'
+
+    thaiPdfHarnessCompile 'com.github.librepdf:openpdf:2.0.3'
+    thaiPdfHarnessCompile 'com.itextpdf:kernel:7.2.5'
+    thaiPdfHarnessCompile 'com.itextpdf:layout:7.2.5'
+    thaiPdfHarnessCompile 'org.apache.pdfbox:pdfbox:3.0.3'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+def fxRuntimeClasspath = files {
+    sourceSets.main.runtimeClasspath.filter { file -> file.name.startsWith('javafx-') }
+}
+def appRuntimeClasspath = files {
+    sourceSets.main.runtimeClasspath.filter { file -> !file.name.startsWith('javafx-') }
+}
+
+task runThaiPdfHarness(type: JavaExec) {
+    group = 'application'
+    description = 'Generate Thai PDF comparison output for Java PDF libraries.'
+    dependsOn thaiPdfHarnessClasses
+    classpath = sourceSets.thaiPdfHarness.runtimeClasspath
+    main = 'com.dyno.harness.thaipdf.ThaiPdfHarness'
+}
+
+task runOperatorConsoleFx(type: JavaExec) {
+    group = 'application'
+    description = 'Run JavaFX operator console shell.'
+    classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
+    main = 'com.dyno.fx.OperatorConsoleApp'
+    jvmArgs = [
+        '--module-path', fxRuntimeClasspath.asPath,
+        '--add-modules', 'javafx.controls'
+    ]
+}
+
+task runOperatorConsoleFxWindowed(type: JavaExec) {
+    group = 'application'
+    description = 'Run JavaFX operator console shell in windowed mode.'
+    classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
+    main = 'com.dyno.fx.OperatorConsoleApp'
+    jvmArgs = [
+        '-DDYNO_UI_MODE=windowed',
+        '--module-path', fxRuntimeClasspath.asPath,
+        '--add-modules', 'javafx.controls'
+    ]
+}
+
+task runOperatorConsoleFxFullscreen(type: JavaExec) {
+    group = 'application'
+    description = 'Run JavaFX operator console shell in fullscreen mode.'
+    classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
+    main = 'com.dyno.fx.OperatorConsoleApp'
+    jvmArgs = [
+        '-DDYNO_UI_FULLSCREEN=true',
+        '--module-path', fxRuntimeClasspath.asPath,
+        '--add-modules', 'javafx.controls'
+    ]
+}
+
+build.dependsOn thaiPdfHarnessClasses

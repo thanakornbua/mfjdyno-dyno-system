@@ -1,0 +1,14 @@
+[Unit]
+Description=CANable2 slcan adapter for dyno SocketCAN
+After=dev-ttyACM0.device
+BindsTo=dev-ttyACM0.device
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/slcand -o -c -s6 /dev/ttyACM0 can0
+ExecStartPost=/usr/sbin/ip link set can0 up
+ExecStop=/usr/sbin/ip link set can0 down
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -44,25 +44,25 @@ struct DynoConfig {
 
 // ---- Default hardware wiring ----
 static constexpr DynoConfig DEFAULT_CONFIG = {
-    .engine_pulse_pin      = 34,
+    .engine_pulse_pin      = 27,
     .engine_pulses_per_rev = 1,
-    .engine_edge_mode      = EdgeMode::RISING,
+    .engine_edge_mode      = EdgeMode::EDGE_RISING,
 
-    .encoder_pin_a         = 32,
-    .encoder_pin_b         = 33,
-    .encoder_ppr           = 600,
+    .encoder_pin_a         = 34,
+    .encoder_pin_b         = 35,
+    .encoder_ppr           = 1024,
 
     .can_rx_pin            = 4,
     .can_tx_pin            = 5,
     .can_bitrate           = 500000,
-    .can_afr_frame_id      = 0x0AF,
+    .can_afr_frame_id      = 0x180,
     .can_afr_byte_offset   = 0,
 
     .uart_tx_pin           = 17,
     .uart_rx_pin           = 16,
-    .uart_baud             = 921600,
+    .uart_baud             = 115200,
 
-    .telemetry_rate_hz     = 100,
+    .telemetry_rate_hz     = 20,
     ._pad                  = {0, 0},
 };
 

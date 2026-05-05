@@ -8,6 +8,7 @@ Type=simple
 User=dyno
 Group=dyno
 WorkingDirectory=/var/lib/dyno
+EnvironmentFile=-/etc/dyno/dyno.env
 EnvironmentFile=-/etc/dyno/dynod.env
 ExecStart=/usr/local/bin/dynod
 Restart=on-failure

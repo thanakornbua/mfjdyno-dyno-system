@@ -452,7 +452,7 @@ impl Esp32ConfigManager {
 }
 
 impl Esp32ConfigError {
-    fn is_retryable(&self) -> bool {
+    pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Timeout { .. } | Self::SerialIo { .. })
     }
 }

@@ -71,6 +71,9 @@ namespace CanAfr {
     // Float AFR for backward compatibility.  get_afr_x100() / 100.0f.
     float     get_afr();
 
+    // Wideband sensor voltage (byte4 * 0.1 V).  Returns 0 when invalid/stale.
+    float     get_voltage();
+
     bool      is_valid();     // true: fresh frame within AFR_TIMEOUT_MS
     CanStatus get_status();   // detailed bus + data health
 }
