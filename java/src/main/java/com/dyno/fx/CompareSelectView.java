@@ -73,7 +73,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
                 List<RunHistorySummaryDto> selected = new ArrayList<RunHistorySummaryDto>(
                     table.getSelectionModel().getSelectedItems()
                 );
-                if (selected.isEmpty() || selected.size() > 4) {
+                if (selected.size() < 2 || selected.size() > 4) {
                     return null;
                 }
                 ArrayList<Long> runIds = new ArrayList<Long>(selected.size());
@@ -101,7 +101,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         Label title = new Label(UiText.text("SELECT RUNS TO COMPARE"));
         title.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
 
-        Label note = new Label(UiText.text("Select 1 to 4 stored runs. Use Delete to remove one stored run."));
+        Label note = new Label(UiText.text("Select 2 to 4 stored runs. Use Delete to remove one stored run."));
         note.setWrapText(true);
 
         HBox actionRow = new HBox(8);
@@ -155,8 +155,8 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
             Button button = (Button) applyButton;
             button.addEventFilter(javafx.event.ActionEvent.ACTION, event -> {
                 int count = table.getSelectionModel().getSelectedItems().size();
-                if (count < 1 || count > 4) {
-                    statusLabel.setText(UiText.text("Select between 1 and 4 stored runs."));
+                if (count < 2 || count > 4) {
+                    statusLabel.setText(UiText.text("Select between 2 and 4 stored runs."));
                     event.consume();
                 }
             });

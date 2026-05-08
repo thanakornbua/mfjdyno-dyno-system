@@ -13,3 +13,4 @@ operator-console/.gradle/
 *.cache
 CACHEDIR.TAG
 
+.git/

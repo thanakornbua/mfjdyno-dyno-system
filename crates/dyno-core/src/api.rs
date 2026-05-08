@@ -13,8 +13,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::watch;
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
@@ -24,7 +24,9 @@ use crate::calibration::{
     validate_profile_name,
 };
 use crate::health::StartupHealth;
+use crate::run_control::{RunControl, RunControlState};
 use crate::storage::{Storage, StoredFrame, StoredRun};
+use dyno_types::{Esp32TelemetryStatus, LiveFrame, RunState};
 
 pub struct ApiTask {
     handle: JoinHandle<()>,
@@ -35,6 +37,7 @@ struct ApiState {
     storage: Storage,
     calibration_tx: watch::Sender<CalibrationProfile>,
     startup_health: StartupHealth,
+    run_control: RunControl,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,6 +118,31 @@ pub struct ComparedRunDto {
 pub struct DeleteRunResponseDto {
     pub run_id: i64,
     pub deleted: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DevSeedRunResponseDto {
+    pub success: bool,
+    pub message: String,
+    pub run_id: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RunConfigureRequestDto {
+    pub license_plate: Option<String>,
+    pub run_mode: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunControlResponseDto {
+    pub success: bool,
+    pub message: String,
+    pub configured: bool,
+    pub started: bool,
+    pub recording: bool,
+    pub run_label: String,
+    pub license_plate: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,10 +228,11 @@ impl ApiTask {
         storage: Storage,
         calibration_tx: watch::Sender<CalibrationProfile>,
         startup_health: StartupHealth,
+        run_control: RunControl,
     ) -> Self {
         let bind_addr = bind_addr.to_owned();
         let handle = tokio::spawn(async move {
-            api_task_loop(bind_addr, storage, calibration_tx, startup_health).await;
+            api_task_loop(bind_addr, storage, calibration_tx, startup_health, run_control).await;
         });
         Self { handle }
     }
@@ -219,9 +248,15 @@ pub fn router(
     storage: Storage,
     calibration_tx: watch::Sender<CalibrationProfile>,
     startup_health: StartupHealth,
+    run_control: RunControl,
 ) -> Router {
     Router::new()
         .route("/healthz", get(get_startup_health))
+        .route("/api/run/configure", post(configure_run))
+        .route("/api/run/start", post(start_run))
+        .route("/api/run/stop", post(stop_run))
+        .route("/api/run/status", get(get_run_status))
+        .route("/api/dev/seed-run", post(seed_dev_run))
         .route("/api/calibration", get(get_active_calibration))
         .route(
             "/api/calibration/profiles",
@@ -248,6 +283,7 @@ pub fn router(
             storage,
             calibration_tx,
             startup_health,
+            run_control,
         })
 }
 
@@ -256,6 +292,7 @@ async fn api_task_loop(
     storage: Storage,
     calibration_tx: watch::Sender<CalibrationProfile>,
     startup_health: StartupHealth,
+    run_control: RunControl,
 ) {
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(listener) => {
@@ -270,7 +307,7 @@ async fn api_task_loop(
 
     if let Err(err) = axum::serve(
         listener,
-        router(storage, calibration_tx, startup_health).into_make_service(),
+        router(storage, calibration_tx, startup_health, run_control).into_make_service(),
     )
     .await
     {
@@ -282,6 +319,97 @@ async fn get_startup_health(
     State(state): State<ApiState>,
 ) -> Result<Json<StartupHealthDto>, ApiError> {
     Ok(Json(startup_health_dto(state.startup_health)))
+}
+
+async fn configure_run(
+    State(state): State<ApiState>,
+    Json(request): Json<RunConfigureRequestDto>,
+) -> Result<Json<RunControlResponseDto>, ApiError> {
+    let snapshot = state.run_control.configure(request.license_plate).await;
+    Ok(Json(run_control_response(
+        "Run configured".to_owned(),
+        snapshot,
+    )))
+}
+
+async fn start_run(State(state): State<ApiState>) -> Result<Json<RunControlResponseDto>, ApiError> {
+    let previous = state.run_control.snapshot().await;
+    let snapshot = state.run_control.start().await;
+    let message = if previous.started {
+        "Run already started"
+    } else {
+        "Run started"
+    };
+    Ok(Json(run_control_response(message.to_owned(), snapshot)))
+}
+
+async fn stop_run(State(state): State<ApiState>) -> Result<Json<RunControlResponseDto>, ApiError> {
+    let previous = state.run_control.snapshot().await;
+    let snapshot = state.run_control.stop().await;
+    if previous.recording || previous.started {
+        state
+            .storage
+            .record_live_frame(LiveFrame::idle(current_time_ms()))
+            .await
+            .map_err(ApiError::Internal)?;
+    }
+
+    let message = if previous.recording || previous.started {
+        "Run stopped"
+    } else {
+        "Run already stopped"
+    };
+    Ok(Json(run_control_response(message.to_owned(), snapshot)))
+}
+
+async fn get_run_status(State(state): State<ApiState>) -> Result<Json<RunControlResponseDto>, ApiError> {
+    let snapshot = state.run_control.snapshot().await;
+    Ok(Json(run_control_response(
+        "Run status".to_owned(),
+        snapshot,
+    )))
+}
+
+async fn seed_dev_run(State(state): State<ApiState>) -> Result<Json<DevSeedRunResponseDto>, ApiError> {
+    if !dev_api_enabled() {
+        return Err(ApiError::BadRequest(
+            "dev run seed endpoint is disabled; set DYNO_ENABLE_DEV_API=true or run a debug build"
+                .to_owned(),
+        ));
+    }
+
+    let base_ms = current_time_ms();
+    let frames = [
+        synthetic_run_frame(base_ms, RunState::Recording, 2600.0, 44.0, 118.0),
+        synthetic_run_frame(base_ms + 100, RunState::Recording, 3600.0, 76.0, 148.0),
+        synthetic_run_frame(base_ms + 200, RunState::Recording, 4600.0, 112.0, 171.0),
+        synthetic_run_frame(base_ms + 300, RunState::Stopping, 1800.0, 28.0, 90.0),
+        synthetic_run_frame(base_ms + 400, RunState::Idle, 900.0, 0.0, 0.0),
+    ];
+
+    for frame in frames {
+        state
+            .storage
+            .record_live_frame(frame)
+            .await
+            .map_err(ApiError::Internal)?;
+    }
+    state.storage.flush().await.map_err(ApiError::Internal)?;
+
+    let run = state
+        .storage
+        .list_recent_runs(1)
+        .await
+        .map_err(ApiError::Internal)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("dev run seed did not create a run")))?;
+
+    Ok(Json(DevSeedRunResponseDto {
+        success: true,
+        message: "Seeded development run".to_owned(),
+        run_id: run.run_id,
+    }))
 }
 
 async fn get_runs(State(state): State<ApiState>) -> Result<Json<Vec<RunSummaryDto>>, ApiError> {
@@ -666,6 +794,18 @@ fn startup_health_dto(health: StartupHealth) -> StartupHealthDto {
     }
 }
 
+fn run_control_response(message: String, snapshot: RunControlState) -> RunControlResponseDto {
+    RunControlResponseDto {
+        success: true,
+        message,
+        configured: snapshot.configured,
+        started: snapshot.started,
+        recording: snapshot.recording,
+        run_label: snapshot.run_label,
+        license_plate: snapshot.license_plate,
+    }
+}
+
 fn run_detail_dto(run: StoredRun) -> RunDetailDto {
     RunDetailDto {
         run_id: run.run_id,
@@ -712,6 +852,52 @@ fn format_started_at_ms(started_at_ms: i64) -> String {
         .unwrap_or_else(|| started_at_ms.to_string())
 }
 
+fn current_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+fn dev_api_enabled() -> bool {
+    cfg!(debug_assertions)
+        || std::env::var("DYNO_ENABLE_DEV_API")
+            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+}
+
+fn synthetic_run_frame(
+    ts_ms: i64,
+    run_state: RunState,
+    engine_rpm: f32,
+    power_hp: f32,
+    torque_nm: f32,
+) -> LiveFrame {
+    LiveFrame {
+        ts_ms,
+        engine_rpm: Some(engine_rpm),
+        roller_rpm: Some(engine_rpm / 4.0),
+        speed_kmh: Some(engine_rpm / 60.0),
+        power_hp: Some(power_hp),
+        torque_nm: Some(torque_nm),
+        correction_factor: 1.02,
+        afr: Some(13.1),
+        lambda: Some(0.89),
+        can_present: true,
+        can_frames_seen: 1,
+        afr_valid: true,
+        can_valid: true,
+        can_status_text: "Dev seed AEM UEGO".to_owned(),
+        ambient_temp_c: Some(24.5),
+        humidity_pct: Some(55.0),
+        pressure_hpa: Some(1013.25),
+        esp32_status: Esp32TelemetryStatus::default(),
+        run_state,
+        faults: Vec::new(),
+        alerts: Default::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +915,7 @@ mod tests {
         config::{Config, SourceMode},
         correction::CorrectionMode,
         health::collect_startup_health,
+        run_control::RunControl,
     };
     use dyno_types::{Esp32TelemetryStatus, LiveFrame, RunState};
 
@@ -823,7 +1010,7 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
         let health = collect_startup_health(&test_config(":memory:"));
-        router(storage, calibration_tx, health)
+        router(storage, calibration_tx, health, RunControl::new())
     }
 
     #[tokio::test]
@@ -841,7 +1028,7 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let task = ApiTask::spawn("127.0.0.1:0", storage, calibration_tx, health);
+        let task = ApiTask::spawn("127.0.0.1:0", storage, calibration_tx, health, RunControl::new());
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         drop(task);
     }
@@ -856,7 +1043,7 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let app = router(storage, calibration_tx, health);
+        let app = router(storage, calibration_tx, health, RunControl::new());
 
         let response = app
             .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
@@ -872,6 +1059,197 @@ mod tests {
         assert_eq!(json["source_mode"], "replay");
         assert!(json["checks"].as_array().expect("checks array").len() >= 1);
         assert_eq!(json["checks"][0]["name"], "database_path");
+    }
+
+    #[tokio::test]
+    async fn run_control_routes_are_java_compatible() {
+        let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let db_path = std::env::temp_dir().join(format!("dyno-api-run-control-{unique}.sqlite"));
+        let _ = std::fs::remove_file(&db_path);
+        let storage = Storage::open(&test_config(&db_path.display().to_string()))
+            .await
+            .expect("open storage");
+        let app = test_router(storage).await;
+
+        let configure_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/run/configure")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"license_plate":" abc 123 "}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("configure response");
+        assert_eq!(configure_response.status(), StatusCode::OK);
+        let configure_body = to_bytes(configure_response.into_body(), usize::MAX)
+            .await
+            .expect("configure bytes");
+        let configure_json: Value = serde_json::from_slice(&configure_body).expect("configure json");
+        assert_eq!(configure_json["success"], true);
+        assert_eq!(configure_json["configured"], true);
+        assert_eq!(configure_json["started"], false);
+        assert_eq!(configure_json["recording"], false);
+        assert_eq!(configure_json["license_plate"], "ABC 123");
+        assert_eq!(configure_json["run_label"], "RUN ABC 123");
+
+        let start_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/run/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("start response");
+        assert_eq!(start_response.status(), StatusCode::OK);
+        let start_body = to_bytes(start_response.into_body(), usize::MAX)
+            .await
+            .expect("start bytes");
+        let start_json: Value = serde_json::from_slice(&start_body).expect("start json");
+        assert_eq!(start_json["success"], true);
+        assert_eq!(start_json["configured"], true);
+        assert_eq!(start_json["started"], true);
+        assert_eq!(start_json["run_label"], "RUN ABC 123");
+
+        let status_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/run/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("status response");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_body = to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .expect("status bytes");
+        let status_json: Value = serde_json::from_slice(&status_body).expect("status json");
+        assert_eq!(status_json["success"], true);
+        assert_eq!(status_json["configured"], true);
+        assert_eq!(status_json["started"], true);
+        assert_eq!(status_json["recording"], false);
+
+        let stop_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/run/stop")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("stop response");
+        assert_eq!(stop_response.status(), StatusCode::OK);
+        let stop_body = to_bytes(stop_response.into_body(), usize::MAX)
+            .await
+            .expect("stop bytes");
+        let stop_json: Value = serde_json::from_slice(&stop_body).expect("stop json");
+        assert_eq!(stop_json["success"], true);
+        assert_eq!(stop_json["configured"], true);
+        assert_eq!(stop_json["started"], false);
+        assert_eq!(stop_json["recording"], false);
+    }
+
+    #[tokio::test]
+    async fn stop_route_finalizes_active_recording_run() {
+        let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let db_path = std::env::temp_dir().join(format!("dyno-api-stop-finalize-{unique}.sqlite"));
+        let _ = std::fs::remove_file(&db_path);
+        let storage = Storage::open(&test_config(&db_path.display().to_string()))
+            .await
+            .expect("open storage");
+        storage
+            .record_live_frame(sample_frame(1000, RunState::Recording, 2800.0, Some(42.0), Some(110.0)))
+            .await
+            .expect("record active run");
+        let active = storage
+            .fetch_active_calibration()
+            .await
+            .expect("fetch active calibration")
+            .expect("active calibration");
+        let (calibration_tx, _calibration_rx) = watch::channel(active);
+        let health = collect_startup_health(&test_config(&db_path.display().to_string()));
+        let run_control = RunControl::new();
+        run_control.start().await;
+        run_control.update_runtime_state(RunState::Recording).await;
+        let app = router(storage.clone(), calibration_tx, health, run_control);
+
+        let stop_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/run/stop")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("stop response");
+        assert_eq!(stop_response.status(), StatusCode::OK);
+        storage.flush().await.expect("flush storage");
+
+        let runs_response = app
+            .oneshot(Request::builder().uri("/api/runs").body(Body::empty()).unwrap())
+            .await
+            .expect("runs response");
+        assert_eq!(runs_response.status(), StatusCode::OK);
+        let runs_body = to_bytes(runs_response.into_body(), usize::MAX)
+            .await
+            .expect("runs bytes");
+        let runs_json: Value = serde_json::from_slice(&runs_body).expect("runs json");
+        assert_eq!(runs_json[0]["started_at_ms"], 1000);
+        assert!(runs_json[0]["ended_at_ms"].as_i64().expect("ended at") >= 1000);
+    }
+
+    #[tokio::test]
+    async fn dev_seed_run_endpoint_populates_history() {
+        let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let db_path = std::env::temp_dir().join(format!("dyno-api-dev-seed-{unique}.sqlite"));
+        let _ = std::fs::remove_file(&db_path);
+        let storage = Storage::open(&test_config(&db_path.display().to_string()))
+            .await
+            .expect("open storage");
+        let app = test_router(storage).await;
+
+        let seed_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/dev/seed-run")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("seed response");
+        assert_eq!(seed_response.status(), StatusCode::OK);
+        let seed_body = to_bytes(seed_response.into_body(), usize::MAX)
+            .await
+            .expect("seed bytes");
+        let seed_json: Value = serde_json::from_slice(&seed_body).expect("seed json");
+        assert_eq!(seed_json["success"], true);
+        assert!(seed_json["run_id"].as_i64().expect("run id") > 0);
+
+        let runs_response = app
+            .oneshot(Request::builder().uri("/api/runs").body(Body::empty()).unwrap())
+            .await
+            .expect("runs response");
+        assert_eq!(runs_response.status(), StatusCode::OK);
+        let runs_body = to_bytes(runs_response.into_body(), usize::MAX)
+            .await
+            .expect("runs bytes");
+        let runs_json: Value = serde_json::from_slice(&runs_body).expect("runs json");
+        assert_eq!(runs_json.as_array().expect("runs array").len(), 1);
+        assert!(runs_json[0]["ended_at_ms"].as_i64().expect("ended at") > 0);
+        assert_eq!(runs_json[0]["peak_power_hp"], 112.0);
+        assert_eq!(runs_json[0]["peak_torque_nm"], 171.0);
     }
 
     #[tokio::test]
@@ -986,7 +1364,7 @@ mod tests {
                 .expect("active calibration"),
         );
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let app = router(storage.clone(), calibration_tx, health);
+        let app = router(storage.clone(), calibration_tx, health, RunControl::new());
 
         let request = Request::builder()
             .method(Method::POST)
@@ -1059,7 +1437,7 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, calibration_rx) = watch::channel(initial_active.clone());
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let app = router(storage.clone(), calibration_tx, health);
+        let app = router(storage.clone(), calibration_tx, health, RunControl::new());
 
         let request = Request::builder()
             .method(Method::POST)

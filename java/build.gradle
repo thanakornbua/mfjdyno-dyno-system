@@ -4,14 +4,32 @@ plugins {
 
 sourceCompatibility = 21
 targetCompatibility = 21
-mainClassName = 'com.dyno.Main'
+mainClassName = 'com.dyno.fx.OperatorConsoleApp'
 
 repositories {
     mavenCentral()
 }
 
-def osName = System.getProperty('os.name').toLowerCase()
-def javafxPlatform = osName.contains('win') ? 'win' : (osName.contains('mac') ? 'mac' : 'linux')
+// ---- Architecture / platform detection ----------------------------------------
+
+def osName  = System.getProperty('os.name').toLowerCase()
+def osArch  = System.getProperty('os.arch').toLowerCase()
+def isArm64 = osArch == 'aarch64' || osArch == 'arm64'
+
+def gluonSdkDir = new File("${System.getProperty('user.home')}/javafx-21-aarch64/javafx-sdk-21.0.1/lib")
+def useGluonSdk = isArm64 && gluonSdkDir.isDirectory() &&
+        gluonSdkDir.listFiles()?.any { it.name.endsWith('.jar') }
+
+def javafxPlatform
+if (osName.contains('win')) {
+    javafxPlatform = 'win'
+} else if (osName.contains('mac')) {
+    javafxPlatform = isArm64 ? 'mac-aarch64' : 'mac'
+} else {
+    javafxPlatform = 'linux'
+}
+
+// ---- Source sets --------------------------------------------------------------
 
 sourceSets {
     thaiPdfHarness {
@@ -24,14 +42,22 @@ sourceSets {
     }
 }
 
+// ---- Dependencies -------------------------------------------------------------
+
 dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
-    implementation 'org.openjfx:javafx-base:21.0.4'
-    implementation "org.openjfx:javafx-base:21.0.4:${javafxPlatform}"
-    implementation 'org.openjfx:javafx-graphics:21.0.4'
-    implementation "org.openjfx:javafx-controls:21.0.4:${javafxPlatform}"
-    implementation "org.openjfx:javafx-graphics:21.0.4:${javafxPlatform}"
-    implementation 'org.openjfx:javafx-controls:21.0.4'
+
+    if (!useGluonSdk) {
+        implementation 'org.openjfx:javafx-base:21.0.4'
+        implementation "org.openjfx:javafx-base:21.0.4:${javafxPlatform}"
+        implementation 'org.openjfx:javafx-graphics:21.0.4'
+        implementation "org.openjfx:javafx-graphics:21.0.4:${javafxPlatform}"
+        implementation 'org.openjfx:javafx-controls:21.0.4'
+        implementation "org.openjfx:javafx-controls:21.0.4:${javafxPlatform}"
+    } else {
+        // Gluon SDK JARs must be on the compile classpath too
+        implementation fileTree(dir: gluonSdkDir, include: '*.jar')
+    }
 
     implementation 'com.itextpdf:kernel:7.2.5'
     implementation 'com.itextpdf:layout:7.2.5'
@@ -43,12 +69,26 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
 }
 
-def fxRuntimeClasspath = files {
-    sourceSets.main.runtimeClasspath.filter { file -> file.name.startsWith('javafx-') }
+// ---- JavaFX classpath split ---------------------------------------------------
+
+def fxRuntimeClasspath = useGluonSdk
+        ? fileTree(dir: gluonSdkDir, include: '*.jar')
+        : files { sourceSets.main.runtimeClasspath.filter { f -> f.name.startsWith('javafx-') } }
+
+def appRuntimeClasspath = useGluonSdk
+        ? files { sourceSets.main.runtimeClasspath }
+        : files { sourceSets.main.runtimeClasspath.filter { f -> !f.name.startsWith('javafx-') } }
+
+def makeFxJvmArgs = { List<String> extra ->
+    extra + ['--module-path', fxRuntimeClasspath.asPath, '--add-modules', 'javafx.controls']
 }
-def appRuntimeClasspath = files {
-    sourceSets.main.runtimeClasspath.filter { file -> !file.name.startsWith('javafx-') }
+
+def waylandEnv = { JavaExec t ->
+    t.environment 'WAYLAND_DISPLAY', 'wayland-0'
+    t.environment 'XDG_RUNTIME_DIR', '/run/user/1000'
 }
+
+// ---- Tasks --------------------------------------------------------------------
 
 task runThaiPdfHarness(type: JavaExec) {
     group = 'application'
@@ -63,10 +103,8 @@ task runOperatorConsoleFx(type: JavaExec) {
     description = 'Run JavaFX operator console shell.'
     classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
     main = 'com.dyno.fx.OperatorConsoleApp'
-    jvmArgs = [
-        '--module-path', fxRuntimeClasspath.asPath,
-        '--add-modules', 'javafx.controls'
-    ]
+    jvmArgs = makeFxJvmArgs([])
+    waylandEnv(delegate)
 }
 
 task runOperatorConsoleFxWindowed(type: JavaExec) {
@@ -74,11 +112,8 @@ task runOperatorConsoleFxWindowed(type: JavaExec) {
     description = 'Run JavaFX operator console shell in windowed mode.'
     classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
     main = 'com.dyno.fx.OperatorConsoleApp'
-    jvmArgs = [
-        '-DDYNO_UI_MODE=windowed',
-        '--module-path', fxRuntimeClasspath.asPath,
-        '--add-modules', 'javafx.controls'
-    ]
+    jvmArgs = makeFxJvmArgs(['-DDYNO_UI_MODE=windowed'])
+    waylandEnv(delegate)
 }
 
 task runOperatorConsoleFxFullscreen(type: JavaExec) {
@@ -86,11 +121,15 @@ task runOperatorConsoleFxFullscreen(type: JavaExec) {
     description = 'Run JavaFX operator console shell in fullscreen mode.'
     classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
     main = 'com.dyno.fx.OperatorConsoleApp'
-    jvmArgs = [
-        '-DDYNO_UI_FULLSCREEN=true',
-        '--module-path', fxRuntimeClasspath.asPath,
-        '--add-modules', 'javafx.controls'
-    ]
+    jvmArgs = makeFxJvmArgs(['-DDYNO_UI_FULLSCREEN=true'])
+    waylandEnv(delegate)
+}
+
+run {
+    classpath = sourceSets.main.output + sourceSets.main.resources + appRuntimeClasspath
+    main = 'com.dyno.fx.OperatorConsoleApp'
+    jvmArgs = makeFxJvmArgs([])
+    waylandEnv(delegate)
 }
 
 build.dependsOn thaiPdfHarnessClasses

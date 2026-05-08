@@ -69,7 +69,7 @@ public final class LiveTelemetryState {
     }
 
     private boolean isRecordingState(String state) {
-        return "RECORDING".equals(state);
+        return state != null && "RECORDING".equals(state.trim().toUpperCase(java.util.Locale.ROOT));
     }
 
     private boolean hasChartPoint(FrameMessage frame) {

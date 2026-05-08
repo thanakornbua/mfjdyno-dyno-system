@@ -42,6 +42,15 @@ public final class RunControlApiClient {
         return sendPost("/api/run/stop", "", false);
     }
 
+    public RunControlResponse status() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(baseUri.resolve("/api/run/status"))
+            .timeout(REQUEST_TIMEOUT)
+            .GET()
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        return parseResponse(response.statusCode(), response.body());
+    }
+
     private RunControlResponse sendPost(String path, String body, boolean hasJsonBody)
         throws IOException, InterruptedException {
         try {

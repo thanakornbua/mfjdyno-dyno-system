@@ -11,6 +11,7 @@ pub mod fusion;
 pub mod health;
 pub mod physics;
 pub mod replay;
+pub mod run_control;
 pub mod serial;
 pub mod serial_link;
 pub mod sources;

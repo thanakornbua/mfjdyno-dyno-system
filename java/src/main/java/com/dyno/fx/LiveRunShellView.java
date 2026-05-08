@@ -41,6 +41,7 @@ public final class LiveRunShellView extends BorderPane {
 
     private final HeaderBarView headerBar;
     private final HBox mainBody;
+    private final VBox runModePane;
     private final VBox leftRail;
     private final HBox chartDomain;
     private final VBox chartArea;
@@ -50,6 +51,7 @@ public final class LiveRunShellView extends BorderPane {
     private RunControlUiState latestControlState;
     private LiveDynoChartModel latestChartModel;
     private OperatorStatusModel latestOperatorStatus;
+    private boolean runModeActive;
 
     private final LiveDynoChartView dynoChartView = new LiveDynoChartView();
 
@@ -101,6 +103,13 @@ public final class LiveRunShellView extends BorderPane {
     private final Label operatorStatusTitle = new Label(UiText.text("OPERATOR STATUS"));
     private final Label operatorStatusPrimary = new Label(UiText.text("Enter license plate to configure a run."));
     private final Label operatorStatusSecondary = new Label(UiText.text("Connection: DISCONNECTED | State: IDLE"));
+
+    private final Label runModeTitle = sectionTitle(UiText.text("RUN MODE"));
+    private final Label runModeRpmValue = runModeMetricValue("—");
+    private final Label runModeSpeedValue = runModeMetricValue("—");
+    private final Label runModeStateValue = runModeMetricValue("—");
+    private final Label runModePowerValue = runModeMetricValue("—");
+    private final Label runModeTorqueValue = runModeMetricValue("—");
 
     public LiveRunShellView() {
         this(new ControlActions() {
@@ -182,11 +191,12 @@ public final class LiveRunShellView extends BorderPane {
         chartSidebar = buildChartSidebar();
         chartDomain = buildChartDomain();
         mainBody = buildMainBody();
+        runModePane = buildRunModePane();
         bottomBar = buildBottomBar();
 
         setTop(headerBar);
-        setCenter(mainBody);
-        setBottom(bottomBar);
+        runModeActive = false;
+        applyRunModeLayout();
 
         applyOperatorStatusTone(OperatorViewModel.Tone.UNAVAILABLE);
         applyLayoutTier(LayoutTier.NORMAL);
@@ -214,7 +224,7 @@ public final class LiveRunShellView extends BorderPane {
         boolean runModeEnabled = !controlState.isBusy();
         boolean startEnabled = !controlState.isBusy() && !controlState.isStarted();
         boolean stopEnabled = !controlState.isBusy() && controlState.isStarted();
-        boolean printEnabled = !controlState.isBusy() && chartModel.hasPlottedData();
+        boolean printEnabled = !controlState.isBusy();
         boolean compareEnabled = !controlState.isBusy();
         boolean calibrationEnabled = !controlState.isBusy();
 
@@ -254,6 +264,12 @@ public final class LiveRunShellView extends BorderPane {
         renderSecondary(saeCfView, sec, 4);
         renderSecondary(faultCountView, sec, 5);
 
+        runModeRpmValue.setText(model.getRpmTile().getValueText() + " RPM");
+        runModeSpeedValue.setText(sec.size() > 1 ? sec.get(1).getValueText() + " km/h" : "— km/h");
+        runModeStateValue.setText(model.getStateText());
+        runModePowerValue.setText(model.getPowerTile().getValueText() + " HP");
+        runModeTorqueValue.setText(model.getTorqueTile().getValueText() + " Nm");
+
         chartRunLabel.setText(UiText.text(chartModel.getRunLabel()));
         chartCaption.setText(UiText.text(chartModel.getChartCaption()));
         chartSummary.setText(UiText.text(chartModel.getSummaryText()));
@@ -292,8 +308,23 @@ public final class LiveRunShellView extends BorderPane {
         OperatorStatusModel operatorStatus,
         RunControlUiState controlState
     ) {
+        return resolveBanner(model, operatorStatus, controlState);
+    }
+
+    public static OperatorViewModel.BannerModel resolveBanner(
+        OperatorViewModel model,
+        OperatorStatusModel operatorStatus,
+        RunControlUiState controlState
+    ) {
         String machineState = model.getStateText();
         String connectionText = model.getConnectionText();
+
+        if ("FAULT".equals(machineState)) {
+            return model.getBanner();
+        }
+        if (!"CONNECTED".equals(connectionText)) {
+            return model.getBanner();
+        }
 
         if (operatorStatus != null && operatorStatus.getOverallState() == OperatorStatusModel.OverallState.UNAVAILABLE) {
             return new OperatorViewModel.BannerModel(
@@ -313,11 +344,13 @@ public final class LiveRunShellView extends BorderPane {
                 OperatorViewModel.Tone.CAUTION
             );
         }
-        if (!"CONNECTED".equals(connectionText)) {
-            return model.getBanner();
-        }
-        if ("FAULT".equals(machineState)) {
-            return model.getBanner();
+
+        if (controlState.statusTone() == OperatorViewModel.Tone.ALERT) {
+            return new OperatorViewModel.BannerModel(
+                "OPERATOR MESSAGE",
+                controlState.statusMessage(),
+                OperatorViewModel.Tone.ALERT
+            );
         }
         if (!controlState.isConfigured()) {
             if ("RECORDING".equals(machineState)) {
@@ -393,6 +426,28 @@ public final class LiveRunShellView extends BorderPane {
      */
     public WritableImage captureChartSnapshot() {
         return dynoChartView.snapshot(null, null);
+    }
+
+    public boolean isRunModeActive() {
+        return runModeActive;
+    }
+
+    public void setRunModeActive(boolean active) {
+        if (runModeActive == active) {
+            return;
+        }
+        runModeActive = active;
+        applyRunModeLayout();
+    }
+
+    private void applyRunModeLayout() {
+        if (runModeActive) {
+            setCenter(runModePane);
+            setBottom(null);
+        } else {
+            setCenter(mainBody);
+            setBottom(bottomBar);
+        }
     }
 
     public void applyLayoutForSize(double width, double height) {
@@ -477,6 +532,7 @@ public final class LiveRunShellView extends BorderPane {
 
     private void refreshStaticText() {
         telemetryTitle.setText(UiText.text("CONTINUOUS TELEMETRY"));
+        runModeTitle.setText(UiText.text("RUN MODE"));
         engineTitle.setText(UiText.text("ENGINE"));
         fuelEnvTitle.setText(UiText.text("FUEL / ENV"));
         chartTitle.setText(UiText.text("LIVE DYNO CHART"));
@@ -620,6 +676,25 @@ public final class LiveRunShellView extends BorderPane {
         return body;
     }
 
+    private VBox buildRunModePane() {
+        VBox pane = new VBox(14);
+        pane.setPadding(new Insets(20));
+        pane.setStyle("-fx-background-color: " + FxTheme.toCss(FxTheme.APP_BACKGROUND) + ";");
+
+        VBox topRow = new VBox(10,
+            runModeMetricCard(UiText.text("ENGINE RPM"), runModeRpmValue),
+            runModeMetricCard(UiText.text("SPEED"), runModeSpeedValue),
+            runModeMetricCard(UiText.text("RUN STATE"), runModeStateValue)
+        );
+        VBox powerRow = new VBox(10,
+            runModeMetricCard(UiText.text("POWER"), runModePowerValue),
+            runModeMetricCard(UiText.text("TORQUE"), runModeTorqueValue)
+        );
+
+        pane.getChildren().addAll(runModeTitle, topRow, powerRow);
+        return pane;
+    }
+
     private VBox buildLeftRail() {
         VBox rail = new VBox(10);
         powerTorqueRow = buildTileRow(powerTile, torqueTile);
@@ -755,6 +830,23 @@ public final class LiveRunShellView extends BorderPane {
 
     private void applyOperatorStatusTone(OperatorViewModel.Tone tone) {
         operatorStatusPrimary.setTextFill(FxTheme.toneColor(tone));
+    }
+
+    private Label runModeMetricValue(String text) {
+        Label label = new Label(UiText.text(text));
+        label.setTextFill(FxTheme.TEXT_PRIMARY);
+        label.setFont(Font.font("Monospaced", FontWeight.BOLD, 64));
+        return label;
+    }
+
+    private VBox runModeMetricCard(String title, Label value) {
+        Label heading = new Label(title);
+        heading.setTextFill(FxTheme.TEXT_SUBTLE);
+        heading.setFont(Font.font("SansSerif", FontWeight.BOLD, 20));
+        VBox box = new VBox(8, heading, value);
+        box.setPadding(new Insets(14));
+        box.setStyle(FxTheme.cardStyle(FxTheme.SURFACE));
+        return box;
     }
 
     private Label sectionTitle(String text) {

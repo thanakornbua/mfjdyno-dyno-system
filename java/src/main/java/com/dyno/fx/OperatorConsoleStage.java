@@ -6,9 +6,7 @@ import com.dyno.calibration.CalibrationResponseDto;
 import com.dyno.control.RunConfigureRequest;
 import com.dyno.control.RunControlApiClient;
 import com.dyno.control.RunControlResponse;
-import com.dyno.export.ExportFormat;
-import com.dyno.export.ExportResult;
-import com.dyno.export.ExportService;
+import com.dyno.export.DynoPdfExporter;
 import com.dyno.health.HealthApiClient;
 import com.dyno.health.OperatorStatusMapper;
 import com.dyno.health.OperatorStatusModel;
@@ -29,14 +27,18 @@ import com.dyno.state.LiveTelemetryState;
 import com.dyno.ws.DynoWebSocketClient;
 import javafx.application.Platform;
 import javafx.scene.Scene;
-import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
 import javafx.stage.Stage;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -178,24 +180,31 @@ public final class OperatorConsoleStage {
     }
 
     private void handleRunModeRequested() {
-        Optional<RunConfiguration> configuration = RunConfigureDialog.show(
-            stage,
-            runControlState.preferredRunConfiguration()
-        );
-        if (!configuration.isPresent()) {
+        if (!root.isRunModeActive()) {
+            root.setRunModeActive(true);
+            runControlState.showOperatorMessage(
+                "Run Mode enabled.",
+                OperatorViewModel.Tone.NORMAL
+            );
+            renderRoot();
             return;
         }
-        final RunConfiguration runConfiguration = configuration.get();
-        submitControlRequest("Configuring run...", new ControlRequest() {
-            @Override
-            public RunControlResponse call() throws Exception {
-                return runControlApiClient.configure(new RunConfigureRequest(
-                    runConfiguration.getLicensePlate(),
-                    null,
-                    null
-                ));
-            }
-        }, runConfiguration);
+
+        if ("RECORDING".equals(latestTelemetryModel.getStateText())) {
+            runControlState.showOperatorMessage(
+                "Cannot exit Run Mode while recording.",
+                OperatorViewModel.Tone.CAUTION
+            );
+            renderRoot();
+            return;
+        }
+
+        root.setRunModeActive(false);
+        runControlState.showOperatorMessage(
+            "Returned to dashboard mode.",
+            OperatorViewModel.Tone.NORMAL
+        );
+        renderRoot();
     }
 
     private void handleStartRequested() {
@@ -236,6 +245,9 @@ public final class OperatorConsoleStage {
                     runControlState.applyNetworkError(response.getMessage());
                 } else {
                     runControlState.applyResponse(response, requestedConfiguration);
+                }
+                if (response.isSuccess() && response.isStarted()) {
+                    root.setRunModeActive(true);
                 }
                 chartPresenter.updateRunControl(
                     runControlState.isConfigured(),
@@ -285,10 +297,20 @@ public final class OperatorConsoleStage {
                     return;
                 }
 
+                List<RunHistorySummaryDto> completedRuns = completedRuns(result.runs);
+                if (completedRuns.size() < 2) {
+                    runControlState.showOperatorMessage(
+                        "Need at least two completed runs to compare.",
+                        OperatorViewModel.Tone.CAUTION
+                    );
+                    renderRoot();
+                    return;
+                }
+
                 CompareSelectView.Result selection = CompareSelectView.show(
                     stage,
                     historyApiClient,
-                    result.runs,
+                    completedRuns,
                     compareDisplayState != null
                 );
                 if (selection == null) {
@@ -306,9 +328,9 @@ public final class OperatorConsoleStage {
                 }
 
                 List<Long> runIds = selection.getSelectedRunIds();
-                if (runIds == null || runIds.isEmpty()) {
+                if (runIds == null || runIds.size() < 2) {
                     runControlState.showOperatorMessage(
-                        "Select 1 to 4 stored runs to compare.",
+                        "Need at least two completed runs to compare.",
                         OperatorViewModel.Tone.CAUTION
                     );
                     renderRoot();
@@ -434,105 +456,111 @@ public final class OperatorConsoleStage {
     }
 
     private void handleExportRequested() {
-        if (compareDisplayState != null && lastCompareResponse != null) {
-            handleExportCompare();
-        } else {
-            handleExportSingleRun();
-        }
-    }
+        final CompareRunsResponseDto capturedCompare = lastCompareResponse;
+        final LiveDynoChartModel capturedChart = latestChartModel;
 
-    private void handleExportCompare() {
-        String context = "Compare: " + compareDisplayState.getSummaryPrimary();
-        ExportDialog.Result config = ExportDialog.show(stage, context);
-        if (config == null) {
-            return;
-        }
-        WritableImage snapshot = null;
-        if (config.getFormats().contains(ExportFormat.PNG) || config.getFormats().contains(ExportFormat.PDF)) {
-            snapshot = root.captureChartSnapshot();
-        }
-        final WritableImage finalSnapshot = snapshot;
-        final ExportDialog.Result finalConfig = config;
-        final CompareRunsResponseDto response = lastCompareResponse;
-        runControlState.setBusy(UiText.text("Exporting comparison..."));
+        runControlState.setBusy("Preparing print export...");
         renderRoot();
-        CompletableFuture.supplyAsync(
-            () -> ExportService.exportCompare(response, finalSnapshot, finalConfig.getFormats(), finalConfig.getOutputDir()),
-            controlExecutor
-        ).thenAccept(result -> Platform.runLater(() -> {
-            runControlState.clearBusy();
-            notifyExportResult(result, finalConfig.getOutputDir());
-            renderRoot();
-        }));
-    }
-
-    private void handleExportSingleRun() {
-        runControlState.setBusy(UiText.text("Loading stored runs for export..."));
-        renderRoot();
-        CompletableFuture.supplyAsync(() -> fetchStoredRuns(), controlExecutor)
-            .thenAccept(listResult -> Platform.runLater(() -> {
+        CompletableFuture
+            .supplyAsync(() -> {
+                if (capturedCompare != null) {
+                    return printCompareExport(capturedCompare);
+                } else if (capturedChart != null && capturedChart.hasPlottedData()) {
+                    return printLiveSnapshot(capturedChart);
+                } else {
+                    return printLatestCompletedRun();
+                }
+            }, controlExecutor)
+            .thenAccept(result -> Platform.runLater(() -> {
                 runControlState.clearBusy();
-                if (listResult.error != null) {
-                    runControlState.applyNetworkError(listResult.error);
-                    renderRoot();
-                    return;
+                if (result.error != null) {
+                    runControlState.showOperatorMessage(result.error, OperatorViewModel.Tone.ALERT);
+                } else {
+                    runControlState.showOperatorMessage(
+                        "Exported report: " + result.outputFile.getFileName(),
+                        OperatorViewModel.Tone.NORMAL
+                    );
                 }
-                RunHistorySummaryDto picked = ExportRunPickerView.show(stage, listResult.runs);
-                if (picked == null || picked.getRunId() == null) {
-                    renderRoot();
-                    return;
-                }
-                long runId = picked.getRunId().longValue();
-                ExportDialog.Result config = ExportDialog.show(stage, String.format("RUN-%05d", runId));
-                if (config == null) {
-                    renderRoot();
-                    return;
-                }
-                WritableImage snapshot = null;
-                if (config.getFormats().contains(ExportFormat.PNG) || config.getFormats().contains(ExportFormat.PDF)) {
-                    snapshot = root.captureChartSnapshot();
-                }
-                final WritableImage finalSnapshot = snapshot;
-                final ExportDialog.Result finalConfig = config;
-                final long finalRunId = runId;
-                runControlState.setBusy(UiText.text("Exporting run data..."));
                 renderRoot();
-                CompletableFuture.supplyAsync(() -> {
-                    try {
-                        RunHistoryDetailDto detail = historyApiClient.getRun(finalRunId);
-                        RunHistoryFrameSeriesDto series = historyApiClient.getRunFrames(finalRunId);
-                        List<RunHistoryFrameDto> frames = series != null && series.getFrames() != null
-                            ? series.getFrames() : Collections.emptyList();
-                        return ExportService.exportSingleRun(detail, frames, finalSnapshot,
-                            finalConfig.getFormats(), finalConfig.getOutputDir());
-                    } catch (Exception e) {
-                        return new ExportResult(
-                            Collections.<java.nio.file.Path>emptyList(),
-                            java.util.Arrays.asList("Export failed: " + e.getMessage())
-                        );
-                    }
-                }, controlExecutor)
-                .thenAccept(result -> Platform.runLater(() -> {
-                    runControlState.clearBusy();
-                    notifyExportResult(result, finalConfig.getOutputDir());
-                    renderRoot();
-                }));
             }));
     }
 
-    private void notifyExportResult(ExportResult result, java.nio.file.Path outputDir) {
-        if (result.hasErrors()) {
-            runControlState.showOperatorMessage(
-                "Export errors: " + String.join("; ", result.getErrors()),
-                OperatorViewModel.Tone.ALERT
-            );
-        } else {
-            String dirName = outputDir != null ? outputDir.getFileName().toString() : "output";
-            runControlState.showOperatorMessage(
-                "Exported " + result.getExportedFiles().size() + " file(s) to " + dirName,
-                OperatorViewModel.Tone.NORMAL
-            );
+    private PrintResult printCompareExport(CompareRunsResponseDto compareResponse) {
+        try {
+            Path outputDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
+            Files.createDirectories(outputDir);
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+            Path outputFile = outputDir.resolve("dyno-compare-" + timestamp + ".pdf");
+            DynoPdfExporter.writeCompare(compareResponse, outputFile);
+            return PrintResult.success(outputFile);
+        } catch (Exception error) {
+            return PrintResult.failure("Compare export failed: " + rootMessage(error));
         }
+    }
+
+    private PrintResult printLiveSnapshot(LiveDynoChartModel chartModel) {
+        try {
+            Path outputDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
+            Files.createDirectories(outputDir);
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+            Path outputFile = outputDir.resolve("dyno-live-" + timestamp + ".pdf");
+            DynoPdfExporter.writeLiveSnapshot(
+                chartModel.getRunLabel(),
+                chartModel.getChartCaption(),
+                chartModel.getSeries(),
+                outputFile
+            );
+            return PrintResult.success(outputFile);
+        } catch (Exception error) {
+            return PrintResult.failure("Live snapshot export failed: " + rootMessage(error));
+        }
+    }
+
+    private PrintResult printLatestCompletedRun() {
+        try {
+            List<RunHistorySummaryDto> runs = historyApiClient.listRuns();
+            List<RunHistorySummaryDto> completed = completedRuns(runs);
+            if (completed.isEmpty()) {
+                return PrintResult.failure("No live or completed run data available to print.");
+            }
+
+            RunHistorySummaryDto latestCompleted = completed.get(0);
+            if (latestCompleted.getRunId() == null) {
+                return PrintResult.failure("No live or completed run data available to print.");
+            }
+
+            long runId = latestCompleted.getRunId().longValue();
+            RunHistoryDetailDto detail = historyApiClient.getRun(runId);
+            RunHistoryFrameSeriesDto series = historyApiClient.getRunFrames(runId);
+            List<RunHistoryFrameDto> frames = series != null && series.getFrames() != null
+                ? series.getFrames() : Collections.emptyList();
+
+            Path outputDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
+            Files.createDirectories(outputDir);
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+            Path outputFile = outputDir.resolve("dyno-run-" + timestamp + ".pdf");
+            DynoPdfExporter.writeSingleRun(detail, frames, outputFile);
+            return PrintResult.success(outputFile);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return PrintResult.failure("Print export interrupted.");
+        } catch (Exception error) {
+            return PrintResult.failure("Print export failed: " + rootMessage(error));
+        }
+    }
+
+    private List<RunHistorySummaryDto> completedRuns(List<RunHistorySummaryDto> runs) {
+        if (runs == null || runs.isEmpty()) {
+            return Collections.emptyList();
+        }
+        ArrayList<RunHistorySummaryDto> completed = new ArrayList<RunHistorySummaryDto>();
+        for (int index = 0; index < runs.size(); index++) {
+            RunHistorySummaryDto run = runs.get(index);
+            if (run != null && run.getEndedAtMs() != null) {
+                completed.add(run);
+            }
+        }
+        return completed;
     }
 
     private RunControlResponse invokeRequest(ControlRequest request) {
@@ -673,6 +701,24 @@ public final class OperatorConsoleStage {
 
         private static CompareResult failure(String error) {
             return new CompareResult(null, error);
+        }
+    }
+
+    private static final class PrintResult {
+        private final Path outputFile;
+        private final String error;
+
+        private PrintResult(Path outputFile, String error) {
+            this.outputFile = outputFile;
+            this.error = error;
+        }
+
+        private static PrintResult success(Path outputFile) {
+            return new PrintResult(outputFile, null);
+        }
+
+        private static PrintResult failure(String error) {
+            return new PrintResult(null, error);
         }
     }
 }

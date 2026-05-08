@@ -16,6 +16,7 @@ use crate::{
     fusion::FusionTask,
     health::{StartupHealth, collect_startup_health, log_startup_health},
     replay::ReplayTask,
+    run_control::RunControl,
     serial::SerialTask,
     state::StateMachine,
     storage::{Storage, StorageTask},
@@ -42,6 +43,7 @@ pub struct App {
     // Retained until the WebSocket layer consumes the live stream directly.
     _live_rx: watch::Receiver<LiveFrame>,
     _calibration_rx: watch::Receiver<CalibrationProfile>,
+    _run_control: RunControl,
     // ── Placeholder stubs (not yet implemented) ───────────────────────────────
     _bme280:  Option<Bme280Task>,
     _fusion:  Option<FusionTask>,
@@ -94,6 +96,7 @@ impl App {
             ));
         }
         let (calibration_tx, calibration_rx) = watch::channel(calibration.clone());
+        let run_control = RunControl::new();
 
         let (live_tx, live_rx) = watch::channel::<LiveFrame>(FusionTask::idle_frame());
         let ws = WsTask::spawn(&config.ws_bind, live_rx.clone());
@@ -103,6 +106,7 @@ impl App {
             storage.clone(),
             calibration_tx.clone(),
             startup_health.clone(),
+            run_control.clone(),
         );
         let state = StateMachine::new();
 
@@ -156,6 +160,10 @@ impl App {
                     live_tx,
                     config.correction_mode,
                     calibration_rx.clone(),
+                    run_control.clone(),
+                    config.arm_rpm,
+                    config.record_rpm,
+                    config.stop_rpm,
                 );
                 (Some(serial), Some(can), None, None, Some(fusion))
             }
@@ -175,6 +183,7 @@ impl App {
             _replay: replay,
             _live_rx: live_rx,
             _calibration_rx: calibration_rx,
+            _run_control: run_control,
             _bme280:  bme280,
             _fusion:  fusion,
             _api:     api,

@@ -38,7 +38,7 @@ CLASSPATH="$(IFS=:; echo "${APP_JARS[*]}")"
 exec "${JAVA_BIN}" \
   -Ddyno.api.base_url="${DYNO_UI_API_BASE_URL:-http://127.0.0.1:9001}" \
   -Ddyno.ws.uri="${DYNO_UI_WS_URI:-ws://127.0.0.1:9000}" \
-  -Ddyno.control.api.base_url="${DYNO_CONTROL_API_BASE_URL:-http://127.0.0.1:8080}" \
+  -Ddyno.control.api.base_url="${DYNO_CONTROL_API_BASE_URL:-http://127.0.0.1:9001}" \
   -DDYNO_UI_MODE="${DYNO_UI_MODE:-maximized}" \
   -DDYNO_UI_FULLSCREEN="${DYNO_UI_FULLSCREEN:-false}" \
   -DDYNO_UI_MAXIMIZE_TO_FULLSCREEN="${DYNO_UI_MAXIMIZE_TO_FULLSCREEN:-true}" \

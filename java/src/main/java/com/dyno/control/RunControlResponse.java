@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public final class RunControlResponse {
-    private boolean success;
+    private Boolean success;
     private String message;
     private boolean configured;
     private boolean started;
@@ -32,7 +32,10 @@ public final class RunControlResponse {
     }
 
     public boolean isSuccess() {
-        return success;
+        if (success != null) {
+            return success.booleanValue();
+        }
+        return statusCode >= 200 && statusCode < 300;
     }
 
     public String getMessage() {

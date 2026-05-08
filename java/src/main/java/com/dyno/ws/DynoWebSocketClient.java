@@ -4,8 +4,6 @@ import com.dyno.config.EndpointConfig;
 import com.dyno.model.FrameMessage;
 import com.dyno.state.ConnectionPhase;
 import com.dyno.state.LiveTelemetryState;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -26,6 +24,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class DynoWebSocketClient {
     private static final URI SOCKET_URI = EndpointConfig.wsUri();
     private static final int DEBUG_FRAME_LIMIT = 5;
+    private static final String[] FRAME_WRAPPER_FIELDS = {"data", "payload", "frame"};
 
     private final LiveTelemetryState state;
     private final HttpClient httpClient;
@@ -35,6 +34,8 @@ public final class DynoWebSocketClient {
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private final AtomicReference<WebSocket> currentSocket = new AtomicReference<WebSocket>();
     private final AtomicInteger debugFramesLogged = new AtomicInteger(0);
+    private final AtomicBoolean rawDebugLogged = new AtomicBoolean(false);
+    private final boolean rawDebugEnabled;
 
     public DynoWebSocketClient(LiveTelemetryState state) {
         this.state = state;
@@ -42,6 +43,7 @@ public final class DynoWebSocketClient {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
         this.mapper = new ObjectMapper();
+        this.rawDebugEnabled = EndpointConfig.debugWebSocketFrames();
         this.executor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
             @Override
             public Thread newThread(Runnable runnable) {
@@ -56,6 +58,66 @@ public final class DynoWebSocketClient {
         if (running.compareAndSet(false, true)) {
             connect();
         }
+    }
+
+    static FrameMessage parseLiveFrameMessage(ObjectMapper mapper, String payload) throws java.io.IOException {
+        JsonNode root = mapper.readTree(payload);
+        JsonNode frameNode = findFrameNode(root);
+        if (frameNode == null) {
+            return null;
+        }
+        return mapper.treeToValue(frameNode, FrameMessage.class);
+    }
+
+    private static JsonNode findFrameNode(JsonNode root) {
+        JsonNode current = root;
+        for (int depth = 0; depth < 4 && current != null && current.isObject(); depth++) {
+            JsonNode typeNode = current.get("type");
+            if (typeNode != null && "live_frame".equals(typeNode.asText())) {
+                JsonNode dataNode = current.get("data");
+                if (dataNode == null || !dataNode.isObject()) {
+                    return null;
+                }
+                if (hasLiveFrameField(dataNode)) {
+                    return dataNode;
+                }
+                current = dataNode;
+                continue;
+            }
+            if (hasLiveFrameField(current)) {
+                return current;
+            }
+            JsonNode next = firstObjectChild(current);
+            if (next == null || next == current) {
+                return null;
+            }
+            current = next;
+        }
+        return null;
+    }
+
+    private static JsonNode firstObjectChild(JsonNode node) {
+        for (int index = 0; index < FRAME_WRAPPER_FIELDS.length; index++) {
+            JsonNode child = node.get(FRAME_WRAPPER_FIELDS[index]);
+            if (child != null && child.isObject()) {
+                return child;
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasLiveFrameField(JsonNode node) {
+        return node.has("engine_rpm")
+            || node.has("roller_rpm")
+            || node.has("speed_kmh")
+            || node.has("power_hp")
+            || node.has("torque_nm")
+            || node.has("lambda")
+            || node.has("afr")
+            || node.has("ambient_temp_c")
+            || node.has("humidity_pct")
+            || node.has("pressure_hpa")
+            || node.has("run_state");
     }
 
     public void stop() {
@@ -136,22 +198,6 @@ public final class DynoWebSocketClient {
         return (message == null || message.trim().isEmpty()) ? current.getClass().getSimpleName() : message;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    static final class LiveFrameEnvelope {
-        @JsonProperty("type")
-        private String type;
-        @JsonProperty("data")
-        private FrameMessage data;
-
-        public String getType() {
-            return type;
-        }
-
-        public FrameMessage getData() {
-            return data;
-        }
-    }
-
     private final class ConnectionListener implements WebSocket.Listener {
         private final StringBuilder buffer = new StringBuilder();
         private final AtomicBoolean terminal = new AtomicBoolean(false);
@@ -197,14 +243,10 @@ public final class DynoWebSocketClient {
 
         private void handleTextMessage(String payload) {
             try {
-                JsonNode json = mapper.readTree(payload);
-                JsonNode typeNode = json.get("type");
-                if (typeNode == null || !"live_frame".equals(typeNode.asText())) {
-                    return;
+                if (rawDebugLogged.compareAndSet(false, true)) {
+                    System.out.println("[dyno-ui] raw websocket message (first frame): " + payload);
                 }
-
-                LiveFrameEnvelope envelope = mapper.treeToValue(json, LiveFrameEnvelope.class);
-                FrameMessage frame = envelope.getData();
+                FrameMessage frame = parseLiveFrameMessage(mapper, payload);
                 if (frame == null) {
                     return;
                 }

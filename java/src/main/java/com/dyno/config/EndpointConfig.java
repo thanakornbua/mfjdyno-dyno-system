@@ -5,7 +5,7 @@ import java.net.URI;
 public final class EndpointConfig {
     private static final String DEFAULT_API_BASE_URL = "http://127.0.0.1:9001";
     private static final String DEFAULT_WS_URI = "ws://127.0.0.1:9000";
-    private static final String DEFAULT_CONTROL_API_BASE_URL = "http://127.0.0.1:8080";
+    private static final String DEFAULT_CONTROL_API_BASE_URL = "http://127.0.0.1:9001";
 
     private EndpointConfig() {
     }
@@ -20,6 +20,13 @@ public final class EndpointConfig {
 
     public static URI controlApiBaseUri() {
         return URI.create(resolveControlApiBaseUrl());
+    }
+
+    public static boolean debugWebSocketFrames() {
+        return truthy(firstNonBlank(
+            System.getProperty("dyno.ws.debug"),
+            System.getenv("DYNO_UI_WS_DEBUG")
+        ));
     }
 
     public static String startupSummary() {
@@ -53,7 +60,8 @@ public final class EndpointConfig {
         String raw = firstNonBlank(
             System.getProperty("dyno.control.api.base_url"),
             System.getProperty("DYNO_CONTROL_API_BASE_URL"),
-            System.getenv("DYNO_CONTROL_API_BASE_URL")
+            System.getenv("DYNO_CONTROL_API_BASE_URL"),
+            resolveApiBaseUrl()
         );
         return raw == null ? DEFAULT_CONTROL_API_BASE_URL : raw;
     }
@@ -74,5 +82,16 @@ public final class EndpointConfig {
             }
         }
         return null;
+    }
+
+    private static boolean truthy(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        return "1".equals(normalized)
+            || "true".equals(normalized)
+            || "yes".equals(normalized)
+            || "on".equals(normalized);
     }
 }

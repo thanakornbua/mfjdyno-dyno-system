@@ -164,6 +164,41 @@ public final class DynoPdfExporter {
     }
 
     /**
+     * Generates a live-snapshot PDF from the current chart series (no stored run required).
+     *
+     * @param runLabel   display label for the report title
+     * @param caption    optional subtitle (chart caption)
+     * @param series     chart series from the live chart model
+     * @param outputFile destination .pdf path
+     */
+    public static void writeLiveSnapshot(
+        String runLabel,
+        String caption,
+        List<ChartSeriesModel> series,
+        Path outputFile
+    ) throws IOException {
+        PdfFont font = FontProvider.loadSarabunFont();
+        PdfWriter writer = new PdfWriter(outputFile.toFile());
+        PdfDocument pdfDoc = new PdfDocument(writer);
+        Document doc = openDoc(pdfDoc, font);
+
+        String subtitle = (caption != null && !caption.trim().isEmpty())
+            ? caption.trim()
+            : "Live chart snapshot";
+        addHeader(doc, LBL_SINGLE_TITLE,
+            (runLabel != null && !runLabel.trim().isEmpty() ? runLabel.trim() : "LIVE") + " — " + subtitle,
+            font);
+
+        doc.add(sectionTitle(LBL_CHART, font));
+        List<ChartSeriesModel> safeSeries = series != null ? series : Collections.<ChartSeriesModel>emptyList();
+        doc.add(makeChartImage(pdfDoc, safeSeries, contentWidth(), 255f, font));
+        doc.add(vSpacer(12));
+
+        addFooter(doc, font);
+        doc.close();
+    }
+
+    /**
      * Generates a comparison PDF report for 1–4 runs.
      *
      * @param response   compare response from backend (run detail + frames per run)

@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.dyno.calibration.CalibrationApiContractTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-04-30T16:26:30" hostname="someonelaptop" time="0.21">
+<testsuite name="com.dyno.calibration.CalibrationApiContractTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-05-07T04:26:46" hostname="someonelaptop" time="0.037">
   <properties/>
-  <testcase name="calibrationProfileListShapeParses" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.173"/>
-  <testcase name="activationRequestSerializesExpectedShape" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.012"/>
+  <testcase name="calibrationProfileListShapeParses" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.008"/>
+  <testcase name="activationRequestSerializesExpectedShape" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.008"/>
   <testcase name="duplicateRequestSerializesExpectedShape" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.002"/>
-  <testcase name="eventListShapeParses" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.007"/>
+  <testcase name="eventListShapeParses" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.006"/>
   <testcase name="upsertRequestSerializesExpectedShape" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.005"/>
-  <testcase name="activeCalibrationShapeParses" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.007"/>
+  <testcase name="activeCalibrationShapeParses" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.006"/>
   <testcase name="draftValidatorFlagsBlankName" classname="com.dyno.calibration.CalibrationApiContractTest" time="0.001"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>

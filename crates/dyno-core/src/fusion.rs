@@ -19,6 +19,7 @@ use crate::{
     calibration::CalibrationProfile,
     can::CanSample,
     correction::{correction_factor, CorrectionMode},
+    run_control::RunControl,
     physics::{
         angular_accel_rad_s2, apply_correction, inertial_power_w, roller_rpm_from_encoder_delta,
         rpm_to_rad_s, speed_kmh_from_roller_rpm, torque_nm_from_power_and_omega, watts_to_hp,
@@ -47,6 +48,13 @@ impl FusionPhysicsConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RunThresholds {
+    arm_rpm: f32,
+    record_rpm: f32,
+    stop_rpm: f32,
+}
+
 /// Converts the latest ESP32 frame into a frontend-ready `LiveFrame`.
 pub struct FusionTask {
     frame_rx: watch::Receiver<DynoFrameV1>,
@@ -55,6 +63,8 @@ pub struct FusionTask {
     tx: watch::Sender<LiveFrame>,
     correction_mode: CorrectionMode,
     calibration_rx: watch::Receiver<CalibrationProfile>,
+    run_control: RunControl,
+    run_thresholds: RunThresholds,
 }
 
 impl FusionTask {
@@ -66,6 +76,10 @@ impl FusionTask {
         tx: watch::Sender<LiveFrame>,
         correction_mode: CorrectionMode,
         calibration_rx: watch::Receiver<CalibrationProfile>,
+        run_control: RunControl,
+        arm_rpm: f32,
+        record_rpm: f32,
+        stop_rpm: f32,
     ) -> Self {
         let task = Self {
             frame_rx,
@@ -74,6 +88,12 @@ impl FusionTask {
             tx,
             correction_mode,
             calibration_rx,
+            run_control,
+            run_thresholds: RunThresholds {
+                arm_rpm,
+                record_rpm,
+                stop_rpm,
+            },
         };
 
         tokio::spawn(fusion_task_loop(
@@ -83,6 +103,8 @@ impl FusionTask {
             task.tx.clone(),
             task.correction_mode,
             task.calibration_rx.clone(),
+            task.run_control.clone(),
+            task.run_thresholds,
         ));
         info!("fusion task spawned");
 
@@ -102,6 +124,8 @@ async fn fusion_task_loop(
     tx: watch::Sender<LiveFrame>,
     correction_mode: CorrectionMode,
     calibration_rx: watch::Receiver<CalibrationProfile>,
+    run_control: RunControl,
+    run_thresholds: RunThresholds,
 ) {
     let mut frame_count = 0u64;
     let mut physics_state = PhysicsState::default();
@@ -118,6 +142,19 @@ async fn fusion_task_loop(
                     let calibration = calibration_rx.borrow();
                     FusionPhysicsConfig::from_calibration(&calibration)
                 };
+                let runtime_state = run_control.snapshot().await;
+                let runtime_engine_rpm = if input.signal_flags & SIG_ENGINE_VALID != 0 {
+                    engine_rpm_from_period(input.engine_period_us)
+                } else {
+                    None
+                };
+                let run_state = next_run_state(
+                    runtime_state.started,
+                    runtime_state.recording,
+                    runtime_engine_rpm,
+                    run_thresholds,
+                );
+                run_control.update_runtime_state(run_state).await;
                 let live = fuse_frame(
                     &input,
                     ambient,
@@ -125,6 +162,7 @@ async fn fusion_task_loop(
                     correction_mode,
                     physics,
                     &mut physics_state,
+                    run_state,
                 );
                 let ambient = ambient.sanitized();
                 let correction = correction_factor(
@@ -181,6 +219,7 @@ fn fuse_frame(
     correction_mode: CorrectionMode,
     physics: FusionPhysicsConfig,
     physics_state: &mut PhysicsState,
+    run_state: RunState,
 ) -> LiveFrame {
     let esp32_status = build_esp32_status(frame);
     let ambient = ambient.sanitized();
@@ -282,7 +321,7 @@ fn fuse_frame(
         humidity_pct: Some(ambient.humidity_pct),
         pressure_hpa: Some(ambient.pressure_hpa),
         esp32_status,
-        run_state: RunState::Idle,
+        run_state,
         faults,
         alerts: LiveAlerts {
             exhaust_temp: AlertLevel::Ok,
@@ -290,6 +329,35 @@ fn fuse_frame(
             lambda: lambda_alert(lambda),
         },
     }
+}
+
+fn next_run_state(
+    started: bool,
+    was_recording: bool,
+    engine_rpm: Option<f32>,
+    thresholds: RunThresholds,
+) -> RunState {
+    if !started {
+        return RunState::Idle;
+    }
+
+    let rpm = engine_rpm.unwrap_or(0.0);
+    if was_recording {
+        if rpm <= thresholds.stop_rpm {
+            return RunState::Stopping;
+        }
+        return RunState::Recording;
+    }
+
+    if rpm >= thresholds.record_rpm {
+        return RunState::Recording;
+    }
+
+    if rpm >= thresholds.arm_rpm {
+        return RunState::Armed;
+    }
+
+    RunState::Armed
 }
 
 #[inline]
@@ -439,6 +507,7 @@ mod tests {
                 roller_inertia_kg_m2: 3.5,
             },
             &mut physics_state,
+            RunState::Idle,
         );
 
         assert!(live.engine_rpm.unwrap() > 0.0);
@@ -476,6 +545,7 @@ mod tests {
                 roller_inertia_kg_m2: 3.5,
             },
             &mut PhysicsState::default(),
+            RunState::Idle,
         );
 
         assert_eq!(live.engine_rpm, None);

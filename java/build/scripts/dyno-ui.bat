@@ -63,10 +63,10 @@ set CMD_LINE_ARGS=%*
 :execute
 @rem Setup the command line
 
-set CLASSPATH=%APP_HOME%\lib\dyno-ui.jar;%APP_HOME%\lib\jackson-databind-2.18.2.jar;%APP_HOME%\lib\javafx-controls-21.0.4-linux.jar;%APP_HOME%\lib\javafx-controls-21.0.4.jar;%APP_HOME%\lib\javafx-graphics-21.0.4.jar;%APP_HOME%\lib\javafx-graphics-21.0.4-linux.jar;%APP_HOME%\lib\javafx-base-21.0.4.jar;%APP_HOME%\lib\javafx-base-21.0.4-linux.jar;%APP_HOME%\lib\layout-7.2.5.jar;%APP_HOME%\lib\kernel-7.2.5.jar;%APP_HOME%\lib\jackson-annotations-2.18.2.jar;%APP_HOME%\lib\jackson-core-2.18.2.jar;%APP_HOME%\lib\io-7.2.5.jar;%APP_HOME%\lib\bcpkix-jdk15on-1.70.jar;%APP_HOME%\lib\bcutil-jdk15on-1.70.jar;%APP_HOME%\lib\bcprov-jdk15on-1.70.jar;%APP_HOME%\lib\commons-7.2.5.jar;%APP_HOME%\lib\slf4j-api-1.7.36.jar
+set CLASSPATH=%APP_HOME%\lib\dyno-ui.jar;%APP_HOME%\lib\jackson-databind-2.18.2.jar;%APP_HOME%\lib\javafx-controls-21.0.4.jar;%APP_HOME%\lib\javafx-controls-21.0.4-linux.jar;%APP_HOME%\lib\javafx-graphics-21.0.4.jar;%APP_HOME%\lib\javafx-graphics-21.0.4-linux.jar;%APP_HOME%\lib\javafx-base-21.0.4.jar;%APP_HOME%\lib\javafx-base-21.0.4-linux.jar;%APP_HOME%\lib\layout-7.2.5.jar;%APP_HOME%\lib\kernel-7.2.5.jar;%APP_HOME%\lib\jackson-annotations-2.18.2.jar;%APP_HOME%\lib\jackson-core-2.18.2.jar;%APP_HOME%\lib\io-7.2.5.jar;%APP_HOME%\lib\bcpkix-jdk15on-1.70.jar;%APP_HOME%\lib\bcutil-jdk15on-1.70.jar;%APP_HOME%\lib\bcprov-jdk15on-1.70.jar;%APP_HOME%\lib\commons-7.2.5.jar;%APP_HOME%\lib\slf4j-api-1.7.36.jar
 
 @rem Execute dyno-ui
-"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %DYNO_UI_OPTS%  -classpath "%CLASSPATH%" com.dyno.Main %CMD_LINE_ARGS%
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %DYNO_UI_OPTS%  -classpath "%CLASSPATH%" com.dyno.fx.OperatorConsoleApp %CMD_LINE_ARGS%
 
 :end
 @rem End local scope for the variables with windows NT shell

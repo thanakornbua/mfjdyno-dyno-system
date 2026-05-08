@@ -33,4 +33,26 @@ public final class LiveTelemetryStateTest {
         assertSame(frame, snapshot.getFrame());
         assertEquals(Double.valueOf(4200.0), snapshot.getFrame().getEngineRpm());
     }
+
+    @Test
+    public void lowercaseBackendRecordingStateAppendsRunPoints() throws Exception {
+        LiveTelemetryState state = new LiveTelemetryState();
+        FrameMessage frame = MAPPER.readValue(
+            "{"
+                + "\"run_state\":\"recording\","
+                + "\"engine_rpm\":4200.0,"
+                + "\"power_hp\":88.0,"
+                + "\"torque_nm\":140.0"
+                + "}",
+            FrameMessage.class
+        );
+
+        state.updateConnection(ConnectionPhase.CONNECTED, "Connected");
+        state.updateFrame(frame);
+
+        LiveTelemetrySnapshot snapshot = state.getSnapshot();
+        assertEquals(true, snapshot.isRecording());
+        assertEquals(1, snapshot.getRunPoints().size());
+        assertEquals(4200.0, snapshot.getRunPoints().get(0).getEngineRpm(), 0.001);
+    }
 }

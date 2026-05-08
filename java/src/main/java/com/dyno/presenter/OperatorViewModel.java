@@ -213,6 +213,58 @@ public final class OperatorViewModel {
         this.chartPoints = Collections.unmodifiableList(new ArrayList<RunPoint>(chartPoints));
     }
 
+    // Backward-compatible constructor used by older tests that still pass a legacy status text.
+    public OperatorViewModel(
+        String connectionText,
+        String stateText,
+        String runLabel,
+        String plateText,
+        String chartCaption,
+        String legacyStatusText,
+        String peakPowerText,
+        String peakTorqueText,
+        boolean recording,
+        boolean startEnabled,
+        boolean stopEnabled,
+        boolean runModeEnabled,
+        boolean printEnabled,
+        BannerModel banner,
+        GaugeModel lambdaGauge,
+        GaugeModel tempGauge,
+        GaugeModel o2Gauge,
+        MetricTileModel powerTile,
+        MetricTileModel torqueTile,
+        MetricTileModel rpmTile,
+        MetricTileModel afrTile,
+        List<SecondaryMetricModel> secondaryMetrics,
+        List<RunPoint> chartPoints
+    ) {
+        this(
+            connectionText,
+            stateText,
+            runLabel,
+            plateText,
+            chartCaption,
+            peakPowerText,
+            peakTorqueText,
+            recording,
+            startEnabled,
+            stopEnabled,
+            runModeEnabled,
+            printEnabled,
+            banner,
+            lambdaGauge,
+            tempGauge,
+            o2Gauge,
+            powerTile,
+            torqueTile,
+            rpmTile,
+            afrTile,
+            secondaryMetrics,
+            chartPoints
+        );
+    }
+
     public String getConnectionText() {
         return connectionText;
     }
