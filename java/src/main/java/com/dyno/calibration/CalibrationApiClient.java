@@ -12,6 +12,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 public final class CalibrationApiClient {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
@@ -85,6 +86,53 @@ public final class CalibrationApiClient {
             .GET()
             .build();
         return send(request, new TypeReference<List<CalibrationProfileEventDto>>() { });
+    }
+
+    public void lockCalibration(String password) throws IOException, InterruptedException, LockException {
+        sendLockRequest("/api/calibration/lock", password);
+    }
+
+    public void unlockCalibration(String password) throws IOException, InterruptedException, LockException {
+        sendLockRequest("/api/calibration/unlock", password);
+    }
+
+    public boolean isCalibrationLocked() throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder("/api/calibration/lock")
+            .GET()
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        ensureSuccess(response.statusCode(), response.body());
+        return mapper.readTree(response.body()).path("locked").asBoolean();
+    }
+
+    public List<AuditRecordDto> listAuditRecords() throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder("/api/audit")
+            .GET()
+            .build();
+        return send(request, new TypeReference<List<AuditRecordDto>>() { });
+    }
+
+    private String sendLockRequest(String path, String password) throws IOException, InterruptedException, LockException {
+        String body = mapper.writeValueAsString(Map.of("password", password));
+        HttpRequest request = requestBuilder(path)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 401 || response.statusCode() == 423) {
+            throw new LockException(response.statusCode(), response.body());
+        }
+        ensureSuccess(response.statusCode(), response.body());
+        return response.body();
+    }
+
+    public static final class LockException extends Exception {
+        public final int statusCode;
+
+        public LockException(int statusCode, String message) {
+            super(message);
+            this.statusCode = statusCode;
+        }
     }
 
     private HttpRequest.Builder requestBuilder(String path) {

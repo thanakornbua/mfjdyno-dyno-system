@@ -6,8 +6,107 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
+use std::sync::Arc;
+use thiserror::Error;
+use tracing::warn;
 
 use crate::config::Config;
+use crate::storage::Storage;
+
+pub const CALIBRATION_UNLOCK_PASSWORD: &str = "MFJ123456";
+
+#[derive(Debug, Error)]
+pub enum CalibrationError {
+    #[error("calibration is locked")]
+    Locked,
+    #[error("wrong password")]
+    WrongPassword,
+    #[error("calibration is already locked")]
+    AlreadyLocked,
+    #[error("calibration is not locked")]
+    AlreadyUnlocked,
+}
+
+const SETTING_CALIBRATION_LOCKED: &str = "calibration_locked";
+
+/// Runtime lock guard for the active calibration profile.
+///
+/// Cloning is cheap — the inner mutex and optional storage handle are both reference-counted.
+#[derive(Clone)]
+pub struct CalibrationLock {
+    locked: Arc<tokio::sync::Mutex<bool>>,
+    storage: Option<Storage>,
+}
+
+impl Default for CalibrationLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CalibrationLock {
+    /// Create a lock with no persistence (starts unlocked). Used in tests and as a default.
+    pub fn new() -> Self {
+        Self {
+            locked: Arc::new(tokio::sync::Mutex::new(false)),
+            storage: None,
+        }
+    }
+
+    /// Create a lock backed by persistent storage. Reads the persisted lock state on init.
+    pub async fn with_storage(storage: Storage) -> Self {
+        let initial = match storage.get_setting(SETTING_CALIBRATION_LOCKED).await {
+            Ok(Some(value)) => value == "true",
+            Ok(None) => false,
+            Err(err) => {
+                warn!("calibration_lock: failed to read persisted lock state: {err:#}");
+                false
+            }
+        };
+        Self {
+            locked: Arc::new(tokio::sync::Mutex::new(initial)),
+            storage: Some(storage),
+        }
+    }
+
+    pub async fn lock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
+        if password != CALIBRATION_UNLOCK_PASSWORD {
+            return Err(CalibrationError::WrongPassword);
+        }
+        let mut guard = self.locked.lock().await;
+        if *guard {
+            return Err(CalibrationError::AlreadyLocked);
+        }
+        *guard = true;
+        if let Some(storage) = &self.storage {
+            if let Err(err) = storage.set_setting(SETTING_CALIBRATION_LOCKED, "true").await {
+                warn!("calibration_lock: failed to persist locked state: {err:#}");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn unlock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
+        if password != CALIBRATION_UNLOCK_PASSWORD {
+            return Err(CalibrationError::WrongPassword);
+        }
+        let mut guard = self.locked.lock().await;
+        if !*guard {
+            return Err(CalibrationError::AlreadyUnlocked);
+        }
+        *guard = false;
+        if let Some(storage) = &self.storage {
+            if let Err(err) = storage.set_setting(SETTING_CALIBRATION_LOCKED, "false").await {
+                warn!("calibration_lock: failed to persist unlocked state: {err:#}");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn is_locked(&self) -> bool {
+        *self.locked.lock().await
+    }
+}
 
 const ROLLER_DIAMETER_WARNING_MIN_M: f32 = 0.1;
 const ROLLER_DIAMETER_WARNING_MAX_M: f32 = 1.0;

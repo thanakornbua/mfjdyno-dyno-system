@@ -5,7 +5,8 @@
 //! storage module.
 
 use axum::{
-    extract::{Path, State},
+    body::Bytes,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -18,15 +19,19 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
+use crate::audit::{AuditEvent, AuditLogger, AuditRecord};
 use crate::calibration::{
-    CalibrationProfile, CalibrationProfileEvent, CalibrationProfileEventType,
-    CalibrationProfileInput, CalibrationValidation, validate_profile, validate_profile_input,
-    validate_profile_name,
+    CalibrationError, CalibrationLock, CalibrationProfile, CalibrationProfileEvent,
+    CalibrationProfileEventType, CalibrationProfileInput, CalibrationValidation, validate_profile,
+    validate_profile_input, validate_profile_name,
 };
 use crate::health::StartupHealth;
 use crate::run_control::{RunControl, RunControlState};
 use crate::storage::{Storage, StoredFrame, StoredRun};
-use dyno_types::{Esp32TelemetryStatus, LiveFrame, RunState};
+use dyno_types::{
+    Esp32TelemetryStatus, LiveFrame, RepeatabilityMetric, RepeatabilityReport, RunState,
+    UpdateCalibrationProfileRequest,
+};
 
 pub struct ApiTask {
     handle: JoinHandle<()>,
@@ -38,6 +43,8 @@ struct ApiState {
     calibration_tx: watch::Sender<CalibrationProfile>,
     startup_health: StartupHealth,
     run_control: RunControl,
+    calibration_lock: CalibrationLock,
+    audit_logger: AuditLogger,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +55,8 @@ pub struct RunSummaryDto {
     pub date: String,
     pub source_mode: String,
     pub correction_mode: String,
+    pub vehicle_name: Option<String>,
+    pub license_plate: Option<String>,
     pub peak_power_hp: f32,
     pub peak_power_rpm: f32,
     pub peak_torque_nm: f32,
@@ -64,6 +73,8 @@ pub struct RunDetailDto {
     pub correction_mode: String,
     pub calibration_profile_id: Option<i64>,
     pub calibration_profile_name: Option<String>,
+    pub vehicle_name: Option<String>,
+    pub license_plate: Option<String>,
     pub roller_diameter_m: f32,
     pub encoder_pulses_per_rev: f32,
     pub roller_inertia_kg_m2: f32,
@@ -125,6 +136,12 @@ pub struct DevSeedRunResponseDto {
     pub success: bool,
     pub message: String,
     pub run_id: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PatchRunRequestDto {
+    pub vehicle_name: Option<String>,
+    pub license_plate: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -211,6 +228,30 @@ pub struct CalibrationProfileEventDto {
     pub new_values_json: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CalibrationLockRequestDto {
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CalibrationLockResponseDto {
+    pub locked: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuditRecordDto {
+    pub id: i64,
+    pub occurred_at: String,
+    pub event: String,
+    pub calibration_profile_id: Option<i64>,
+    pub params_snapshot: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepeatabilityQuery {
+    ids: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorBody {
     error: String,
@@ -219,6 +260,8 @@ struct ErrorBody {
 enum ApiError {
     NotFound(String),
     BadRequest(String),
+    Unauthorized(String),
+    Locked(String),
     Internal(anyhow::Error),
 }
 
@@ -229,10 +272,21 @@ impl ApiTask {
         calibration_tx: watch::Sender<CalibrationProfile>,
         startup_health: StartupHealth,
         run_control: RunControl,
+        calibration_lock: CalibrationLock,
+        audit_logger: AuditLogger,
     ) -> Self {
         let bind_addr = bind_addr.to_owned();
         let handle = tokio::spawn(async move {
-            api_task_loop(bind_addr, storage, calibration_tx, startup_health, run_control).await;
+            api_task_loop(
+                bind_addr,
+                storage,
+                calibration_tx,
+                startup_health,
+                run_control,
+                calibration_lock,
+                audit_logger,
+            )
+            .await;
         });
         Self { handle }
     }
@@ -249,6 +303,8 @@ pub fn router(
     calibration_tx: watch::Sender<CalibrationProfile>,
     startup_health: StartupHealth,
     run_control: RunControl,
+    calibration_lock: CalibrationLock,
+    audit_logger: AuditLogger,
 ) -> Router {
     Router::new()
         .route("/healthz", get(get_startup_health))
@@ -258,6 +314,8 @@ pub fn router(
         .route("/api/run/status", get(get_run_status))
         .route("/api/dev/seed-run", post(seed_dev_run))
         .route("/api/calibration", get(get_active_calibration))
+        .route("/api/calibration/lock", post(lock_calibration_handler))
+        .route("/api/calibration/unlock", post(unlock_calibration_handler))
         .route(
             "/api/calibration/profiles",
             get(get_calibration_profiles).post(create_calibration_profile),
@@ -275,15 +333,19 @@ pub fn router(
             get(get_calibration_profile_events),
         )
         .route("/api/calibration/activate", post(activate_calibration))
+        .route("/api/audit", get(get_audit_log))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/compare", post(compare_runs))
-        .route("/api/runs/:id", get(get_run).delete(delete_run))
+        .route("/api/runs/repeatability", get(get_runs_repeatability))
+        .route("/api/runs/:id", get(get_run).delete(delete_run).patch(patch_run))
         .route("/api/runs/:id/frames", get(get_run_frames))
         .with_state(ApiState {
             storage,
             calibration_tx,
             startup_health,
             run_control,
+            calibration_lock,
+            audit_logger,
         })
 }
 
@@ -293,6 +355,8 @@ async fn api_task_loop(
     calibration_tx: watch::Sender<CalibrationProfile>,
     startup_health: StartupHealth,
     run_control: RunControl,
+    calibration_lock: CalibrationLock,
+    audit_logger: AuditLogger,
 ) {
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(listener) => {
@@ -307,7 +371,15 @@ async fn api_task_loop(
 
     if let Err(err) = axum::serve(
         listener,
-        router(storage, calibration_tx, startup_health, run_control).into_make_service(),
+        router(
+            storage,
+            calibration_tx,
+            startup_health,
+            run_control,
+            calibration_lock,
+            audit_logger,
+        )
+        .into_make_service(),
     )
     .await
     {
@@ -455,6 +527,10 @@ async fn create_calibration_profile(
     State(state): State<ApiState>,
     Json(request): Json<CalibrationUpsertRequestDto>,
 ) -> Result<Json<CalibrationResponseDto>, ApiError> {
+    if state.calibration_lock.is_locked().await {
+        return Err(ApiError::Locked("calibration is locked".to_owned()));
+    }
+
     let input = calibration_profile_input(&request);
     let validation = validate_profile_input(&input);
     if !validation.is_valid {
@@ -471,6 +547,16 @@ async fn create_calibration_profile(
         .map_err(ApiError::Internal)?;
     maybe_publish_runtime_calibration(&state, &change.profile);
 
+    let snapshot = serde_json::to_value(&change.profile).unwrap_or(serde_json::Value::Null);
+    let _ = state
+        .audit_logger
+        .log(
+            AuditEvent::ApplyMachineConfig,
+            Some(change.profile.profile_id),
+            snapshot,
+        )
+        .await;
+
     Ok(Json(CalibrationResponseDto {
         profile: calibration_profile_dto(change.profile.clone()),
         validation: validate_profile(&change.profile),
@@ -479,11 +565,38 @@ async fn create_calibration_profile(
 }
 
 async fn update_calibration_profile(
-    Path(profile_id): Path<i64>,
     State(state): State<ApiState>,
-    Json(request): Json<CalibrationUpsertRequestDto>,
+    Path(profile_id): Path<i64>,
+    body: Bytes,
 ) -> Result<Json<CalibrationResponseDto>, ApiError> {
-    let input = calibration_profile_input(&request);
+    // Lock check before any deserialization: a locked system returns 423
+    // immediately regardless of whether the body is valid JSON.
+    if state.calibration_lock.is_locked().await {
+        return Err(ApiError::Locked("calibration is locked".to_owned()));
+    }
+
+    let payload: UpdateCalibrationProfileRequest =
+        serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Fetch the existing profile so we can merge in only the provided fields.
+    let existing = state
+        .storage
+        .fetch_calibration_profile(profile_id)
+        .await
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::NotFound(format!("calibration profile {profile_id} not found")))?;
+
+    let input = CalibrationProfileInput {
+        name: payload.name.unwrap_or(existing.name),
+        roller_diameter_m: payload.roller_diameter_m.unwrap_or(existing.roller_diameter_m),
+        encoder_pulses_per_rev: payload.encoder_pulses_per_rev.unwrap_or(existing.encoder_pulses_per_rev),
+        roller_inertia_kg_m2: payload.roller_inertia_kg_m2.unwrap_or(existing.roller_inertia_kg_m2),
+        sample_window_ms: payload.sample_window_ms.unwrap_or(existing.sample_window_ms),
+        engine_pulses_per_rev_hint: payload.engine_pulses_per_rev_hint.or(existing.engine_pulses_per_rev_hint),
+        engine_rpm_scale: payload.engine_rpm_scale.or(existing.engine_rpm_scale),
+        notes: payload.notes.or(existing.notes),
+    };
+
     let validation = validate_profile_input(&input);
     if !validation.is_valid {
         return Err(ApiError::BadRequest(format!(
@@ -494,11 +607,21 @@ async fn update_calibration_profile(
 
     let change = state
         .storage
-        .update_calibration_profile(profile_id, input, request.activate_after_save.unwrap_or(false))
+        .update_calibration_profile(profile_id, input, payload.activate_after_save.unwrap_or(false))
         .await
         .map_err(ApiError::Internal)?
         .ok_or_else(|| ApiError::NotFound(format!("calibration profile {profile_id} not found")))?;
     maybe_publish_runtime_calibration(&state, &change.profile);
+
+    let snapshot = serde_json::to_value(&change.profile).unwrap_or(serde_json::Value::Null);
+    let _ = state
+        .audit_logger
+        .log(
+            AuditEvent::ApplyMachineConfig,
+            Some(change.profile.profile_id),
+            snapshot,
+        )
+        .await;
 
     Ok(Json(CalibrationResponseDto {
         profile: calibration_profile_dto(change.profile.clone()),
@@ -689,6 +812,20 @@ async fn compare_runs(
     Ok(Json(CompareRunsResponseDto { runs }))
 }
 
+async fn patch_run(
+    Path(run_id): Path<i64>,
+    State(state): State<ApiState>,
+    Json(request): Json<PatchRunRequestDto>,
+) -> Result<Json<RunSummaryDto>, ApiError> {
+    let updated = state
+        .storage
+        .update_run_metadata(run_id, request.vehicle_name, request.license_plate)
+        .await
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::NotFound(format!("run {run_id} not found")))?;
+    Ok(Json(run_summary_dto(updated)))
+}
+
 async fn delete_run(
     Path(run_id): Path<i64>,
     State(state): State<ApiState>,
@@ -704,11 +841,81 @@ async fn delete_run(
     Ok(Json(DeleteRunResponseDto { run_id, deleted }))
 }
 
+async fn lock_calibration_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<CalibrationLockRequestDto>,
+) -> Result<Json<CalibrationLockResponseDto>, ApiError> {
+    let profile = state
+        .storage
+        .fetch_active_calibration()
+        .await
+        .map_err(ApiError::Internal)?;
+    let profile_id = profile.as_ref().map(|p| p.profile_id);
+    let snapshot = profile
+        .as_ref()
+        .and_then(|p| serde_json::to_value(p).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    map_calibration_error(
+        state.calibration_lock.lock_calibration(&request.password).await,
+    )?;
+
+    let _ = state
+        .audit_logger
+        .log(AuditEvent::LockCalibration, profile_id, snapshot)
+        .await;
+
+    Ok(Json(CalibrationLockResponseDto { locked: true }))
+}
+
+async fn unlock_calibration_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<CalibrationLockRequestDto>,
+) -> Result<Json<CalibrationLockResponseDto>, ApiError> {
+    let profile = state
+        .storage
+        .fetch_active_calibration()
+        .await
+        .map_err(ApiError::Internal)?;
+    let profile_id = profile.as_ref().map(|p| p.profile_id);
+    let snapshot = profile
+        .as_ref()
+        .and_then(|p| serde_json::to_value(p).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    map_calibration_error(
+        state.calibration_lock.unlock_calibration(&request.password).await,
+    )?;
+
+    let _ = state
+        .audit_logger
+        .log(AuditEvent::UnlockCalibration, profile_id, snapshot)
+        .await;
+
+    Ok(Json(CalibrationLockResponseDto { locked: false }))
+}
+
+async fn get_audit_log(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<AuditRecordDto>>, ApiError> {
+    let records = state
+        .storage
+        .list_audit_records()
+        .await
+        .map_err(ApiError::Internal)?;
+    Ok(Json(records.into_iter().map(audit_record_dto).collect()))
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            Self::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
+            Self::Locked(message) => (
+                StatusCode::from_u16(423).unwrap_or(StatusCode::CONFLICT),
+                message,
+            ),
             Self::Internal(err) => {
                 error!("api: request failed: {err:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_owned())
@@ -727,6 +934,8 @@ fn run_summary_dto(run: StoredRun) -> RunSummaryDto {
         date: format_started_at_ms(run.started_at_ms),
         source_mode: run.source_mode.to_string(),
         correction_mode: run.correction_mode.to_string(),
+        vehicle_name: run.vehicle_name,
+        license_plate: run.license_plate,
         peak_power_hp: run.peak_power_hp,
         peak_power_rpm: run.peak_power_rpm,
         peak_torque_nm: run.peak_torque_nm,
@@ -782,6 +991,25 @@ fn maybe_publish_runtime_calibration(state: &ApiState, profile: &CalibrationProf
     }
 }
 
+fn map_calibration_error(result: Result<(), CalibrationError>) -> Result<(), ApiError> {
+    result.map_err(|e| match e {
+        CalibrationError::WrongPassword => ApiError::Unauthorized(e.to_string()),
+        CalibrationError::Locked
+        | CalibrationError::AlreadyLocked
+        | CalibrationError::AlreadyUnlocked => ApiError::Locked(e.to_string()),
+    })
+}
+
+fn audit_record_dto(record: AuditRecord) -> AuditRecordDto {
+    AuditRecordDto {
+        id: record.id,
+        occurred_at: record.occurred_at.to_rfc3339(),
+        event: record.event.to_string(),
+        calibration_profile_id: record.calibration_profile_id,
+        params_snapshot: record.params_snapshot,
+    }
+}
+
 fn startup_health_dto(health: StartupHealth) -> StartupHealthDto {
     StartupHealthDto {
         status: match health.status {
@@ -816,6 +1044,8 @@ fn run_detail_dto(run: StoredRun) -> RunDetailDto {
         correction_mode: run.correction_mode.to_string(),
         calibration_profile_id: run.calibration_profile_id,
         calibration_profile_name: run.calibration_profile_name,
+        vehicle_name: run.vehicle_name,
+        license_plate: run.license_plate,
         roller_diameter_m: run.roller_diameter_m,
         encoder_pulses_per_rev: run.encoder_pulses_per_rev,
         roller_inertia_kg_m2: run.roller_inertia_kg_m2,
@@ -866,6 +1096,77 @@ fn dev_api_enabled() -> bool {
             .unwrap_or(false)
 }
 
+async fn get_runs_repeatability(
+    State(state): State<ApiState>,
+    Query(params): Query<RepeatabilityQuery>,
+) -> Result<Json<RepeatabilityReport>, ApiError> {
+    let ids: Result<Vec<i64>, _> = params
+        .ids
+        .split(',')
+        .map(|s| s.trim().parse::<i64>())
+        .collect();
+    let ids = ids.map_err(|_| {
+        ApiError::BadRequest("ids must be a comma-separated list of integers".to_owned())
+    })?;
+
+    if ids.len() < 2 {
+        return Err(ApiError::BadRequest(
+            "at least 2 run ids are required for a repeatability report".to_owned(),
+        ));
+    }
+
+    let peaks = state
+        .storage
+        .get_peak_values_for_runs(&ids)
+        .await
+        .map_err(ApiError::Internal)?;
+
+    if peaks.len() < 2 {
+        return Err(ApiError::BadRequest(
+            "fewer than 2 of the requested runs have frame data; repeatability requires at least 2"
+                .to_owned(),
+        ));
+    }
+
+    let run_ids: Vec<i64> = peaks.iter().map(|(id, _, _, _)| *id).collect();
+    let hp_values: Vec<f64> = peaks.iter().map(|(_, hp, _, _)| *hp).collect();
+    let torque_values: Vec<f64> = peaks.iter().map(|(_, _, tq, _)| *tq).collect();
+    let speed_options: Vec<Option<f64>> = peaks.iter().map(|(_, _, _, spd)| *spd).collect();
+
+    let peak_speed_kmh = if speed_options.iter().all(|v| v.is_some()) {
+        Some(compute_repeatability_metric(
+            speed_options.into_iter().map(|v| v.unwrap()).collect(),
+        ))
+    } else {
+        None
+    };
+
+    Ok(Json(RepeatabilityReport {
+        run_ids,
+        peak_hp: compute_repeatability_metric(hp_values),
+        peak_torque_nm: compute_repeatability_metric(torque_values),
+        peak_speed_kmh,
+    }))
+}
+
+fn compute_repeatability_metric(values: Vec<f64>) -> RepeatabilityMetric {
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let span_percent = if mean != 0.0 {
+        (max - min) / mean * 100.0
+    } else {
+        0.0
+    };
+    RepeatabilityMetric {
+        min,
+        max,
+        mean,
+        span_percent,
+        per_run: values,
+    }
+}
+
 fn synthetic_run_frame(
     ts_ms: i64,
     run_state: RunState,
@@ -912,6 +1213,8 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::{
+        audit::AuditLogger,
+        calibration::CalibrationLock,
         config::{Config, SourceMode},
         correction::CorrectionMode,
         health::collect_startup_health,
@@ -1010,7 +1313,15 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
         let health = collect_startup_health(&test_config(":memory:"));
-        router(storage, calibration_tx, health, RunControl::new())
+        let audit_logger = AuditLogger::new(storage.clone());
+        router(
+            storage,
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+        )
     }
 
     #[tokio::test]
@@ -1028,7 +1339,16 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let task = ApiTask::spawn("127.0.0.1:0", storage, calibration_tx, health, RunControl::new());
+        let audit_logger = AuditLogger::new(storage.clone());
+        let task = ApiTask::spawn(
+            "127.0.0.1:0",
+            storage,
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+        );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         drop(task);
     }
@@ -1043,7 +1363,15 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let app = router(storage, calibration_tx, health, RunControl::new());
+        let audit_logger = AuditLogger::new(storage.clone());
+        let app = router(
+            storage,
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+        );
 
         let response = app
             .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
@@ -1179,7 +1507,15 @@ mod tests {
         let run_control = RunControl::new();
         run_control.start().await;
         run_control.update_runtime_state(RunState::Recording).await;
-        let app = router(storage.clone(), calibration_tx, health, run_control);
+        let audit_logger = AuditLogger::new(storage.clone());
+        let app = router(
+            storage.clone(),
+            calibration_tx,
+            health,
+            run_control,
+            CalibrationLock::new(),
+            audit_logger,
+        );
 
         let stop_response = app
             .clone()
@@ -1204,8 +1540,8 @@ mod tests {
             .await
             .expect("runs bytes");
         let runs_json: Value = serde_json::from_slice(&runs_body).expect("runs json");
-        assert_eq!(runs_json[0]["started_at_ms"], 1000);
-        assert!(runs_json[0]["ended_at_ms"].as_i64().expect("ended at") >= 1000);
+        assert!(runs_json[0]["started_at_ms"].as_i64().expect("started at ms") > 1_000_000_000_000_i64);
+        assert!(runs_json[0]["ended_at_ms"].as_i64().expect("ended at ms") > 1_000_000_000_000_i64);
     }
 
     #[tokio::test]
@@ -1364,7 +1700,15 @@ mod tests {
                 .expect("active calibration"),
         );
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let app = router(storage.clone(), calibration_tx, health, RunControl::new());
+        let audit_logger = AuditLogger::new(storage.clone());
+        let app = router(
+            storage.clone(),
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+        );
 
         let request = Request::builder()
             .method(Method::POST)
@@ -1437,7 +1781,15 @@ mod tests {
             .expect("active calibration");
         let (calibration_tx, calibration_rx) = watch::channel(initial_active.clone());
         let health = collect_startup_health(&test_config(&db_path.display().to_string()));
-        let app = router(storage.clone(), calibration_tx, health, RunControl::new());
+        let audit_logger = AuditLogger::new(storage.clone());
+        let app = router(
+            storage.clone(),
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+        );
 
         let request = Request::builder()
             .method(Method::POST)
@@ -1691,5 +2043,77 @@ mod tests {
             "Default bootstrap profile"
         );
         assert_eq!(json["runs"][0]["frames"].as_array().expect("frames").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn repeatability_endpoint_returns_metrics_for_two_runs() {
+        let (storage, _db_path) = seeded_storage("repeatability").await;
+
+        // Seed a second run with different peak values (peak_hp=90, peak_torque=136).
+        storage
+            .record_live_frame(sample_frame(2000, RunState::Recording, 2800.0, Some(70.0), Some(120.0)))
+            .await
+            .expect("run2 frame 1");
+        storage
+            .record_live_frame(sample_frame(2100, RunState::Recording, 4400.0, Some(90.0), Some(136.0)))
+            .await
+            .expect("run2 frame 2");
+        storage
+            .record_live_frame(sample_frame(2200, RunState::Idle, 900.0, None, None))
+            .await
+            .expect("run2 idle");
+        storage.flush().await.expect("flush");
+
+        let runs = storage.list_recent_runs(2).await.expect("list runs");
+        assert_eq!(runs.len(), 2);
+        let ids: Vec<i64> = runs.iter().map(|r| r.run_id).collect();
+        let uri = format!("/api/runs/repeatability?ids={},{}", ids[0], ids[1]);
+
+        let app = test_router(storage).await;
+        let request = Request::builder()
+            .uri(&uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.expect("repeatability response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("repeatability bytes");
+        let json: Value = serde_json::from_slice(&body).expect("repeatability json");
+
+        // run_ids array has exactly 2 entries
+        assert_eq!(json["run_ids"].as_array().expect("run_ids").len(), 2);
+
+        // peak_hp: min=88, max=90, mean=89 — span = 2/89*100 ≈ 2.25%
+        let hp = &json["peak_hp"];
+        assert_eq!(hp["min"].as_f64().expect("hp min"), 88.0);
+        assert_eq!(hp["max"].as_f64().expect("hp max"), 90.0);
+        assert_eq!(hp["per_run"].as_array().expect("hp per_run").len(), 2);
+        assert!(hp["span_percent"].as_f64().expect("hp span_percent") > 0.0);
+
+        // peak_torque_nm: min=132, max=136
+        let tq = &json["peak_torque_nm"];
+        assert_eq!(tq["min"].as_f64().expect("tq min"), 132.0);
+        assert_eq!(tq["max"].as_f64().expect("tq max"), 136.0);
+
+        // peak_speed_kmh present (both runs have speed data)
+        assert!(!json["peak_speed_kmh"].is_null());
+        let spd = &json["peak_speed_kmh"];
+        assert_eq!(spd["per_run"].as_array().expect("spd per_run").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn repeatability_endpoint_rejects_fewer_than_two_ids() {
+        let (storage, _db_path) = seeded_storage("repeatability-bad").await;
+        let run_id = storage.list_recent_runs(1).await.expect("list runs")[0].run_id;
+        let app = test_router(storage).await;
+
+        let request = Request::builder()
+            .uri(format!("/api/runs/repeatability?ids={run_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.expect("repeatability bad response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -36,7 +36,12 @@ public final class LiveDynoChartView extends StackPane {
     private final Map<String, Integer> enqueuedPointsBySeries = new LinkedHashMap<String, Integer>();
     private final Map<String, List<XYChart.Data<Number, Number>>> pendingPointsBySeries =
         new LinkedHashMap<String, List<XYChart.Data<Number, Number>>>();
+    private final Map<String, XYChart.Series<Number, Number>> overlaySeriesById =
+        new LinkedHashMap<String, XYChart.Series<Number, Number>>();
+    private final Map<String, ChartSeriesModel> overlaySeriesModelById =
+        new LinkedHashMap<String, ChartSeriesModel>();
     private String seriesSignature = "";
+    private String overlaySignature = "";
     private String currentXAxisLabel = "Engine RPM";
 
     private long datasetToken = Long.MIN_VALUE;
@@ -82,16 +87,24 @@ public final class LiveDynoChartView extends StackPane {
         }
 
         String nextSignature = buildSeriesSignature(model.getSeries());
-        if (model.getDatasetToken() != datasetToken || !nextSignature.equals(seriesSignature)) {
+        String nextOverlaySignature = buildSeriesSignature(model.getOverlaySeries());
+        boolean tokenChanged = model.getDatasetToken() != datasetToken;
+        boolean liveChanged = tokenChanged || !nextSignature.equals(seriesSignature);
+        boolean overlayChanged = !nextOverlaySignature.equals(overlaySignature);
+
+        if (tokenChanged) {
             resetDataset(model.getDatasetToken());
         }
 
-        seriesSignature = nextSignature;
+        if (liveChanged || overlayChanged) {
+            seriesSignature = nextSignature;
+            overlaySignature = nextOverlaySignature;
+            syncAllSeries(model.getOverlaySeries(), model.getSeries());
+        }
+
         currentXAxisLabel = model.getXAxisLabel();
         xAxis.setLabel(model.getXAxisLabel());
         valueAxis.setLabel(model.getYAxisLabel());
-        syncSeries(model.getSeries());
-        updateAxes();
 
         for (int seriesIndex = 0; seriesIndex < model.getSeries().size(); seriesIndex++) {
             ChartSeriesModel seriesModel = model.getSeries().get(seriesIndex);
@@ -100,6 +113,7 @@ public final class LiveDynoChartView extends StackPane {
                 : 0;
             List<ChartPlotPoint> points = seriesModel.getPoints();
             List<XYChart.Data<Number, Number>> pending = pendingPointsBySeries.get(seriesModel.getId());
+            if (pending == null) continue;
             for (int pointIndex = enqueued; pointIndex < points.size(); pointIndex++) {
                 ChartPlotPoint point = points.get(pointIndex);
                 pending.add(new XYChart.Data<Number, Number>(
@@ -111,14 +125,19 @@ public final class LiveDynoChartView extends StackPane {
             }
             enqueuedPointsBySeries.put(seriesModel.getId(), Integer.valueOf(points.size()));
         }
+
+        updateAxes();
     }
 
     private void resetDataset(long nextToken) {
         datasetToken = nextToken;
         seriesSignature = "";
+        overlaySignature = "";
         chart.setData(FXCollections.observableArrayList());
         seriesById.clear();
         seriesModelById.clear();
+        overlaySeriesById.clear();
+        overlaySeriesModelById.clear();
         enqueuedPointsBySeries.clear();
         pendingPointsBySeries.clear();
         maxRpm = DEFAULT_RPM_MAX;
@@ -129,33 +148,82 @@ public final class LiveDynoChartView extends StackPane {
         valueAxis.setTickUnit(50);
     }
 
-    private void flushPendingPoints() {
-        if (pendingPointsBySeries.isEmpty()) {
-            return;
+    private void syncAllSeries(
+        List<ChartSeriesModel> overlaySeries,
+        List<ChartSeriesModel> liveSeries
+    ) {
+        overlaySeriesById.clear();
+        overlaySeriesModelById.clear();
+
+        ObservableList<XYChart.Series<Number, Number>> allSeries =
+            FXCollections.observableArrayList();
+
+        // Overlay series first — renders behind live data
+        for (int i = 0; i < overlaySeries.size(); i++) {
+            ChartSeriesModel model = overlaySeries.get(i);
+            XYChart.Series<Number, Number> series = new XYChart.Series<Number, Number>();
+            series.setName(model.getLabel());
+            for (int pi = 0; pi < model.getPoints().size(); pi++) {
+                ChartPlotPoint point = model.getPoints().get(pi);
+                series.getData().add(new XYChart.Data<Number, Number>(
+                    Double.valueOf(point.getX()), Double.valueOf(point.getY())));
+                maxRpm = Math.max(maxRpm, point.getX());
+                maxValue = Math.max(maxValue, point.getY());
+            }
+            overlaySeriesById.put(model.getId(), series);
+            overlaySeriesModelById.put(model.getId(), model);
+            allSeries.add(series);
         }
 
-        boolean flushed = false;
-        for (Map.Entry<String, List<XYChart.Data<Number, Number>>> entry : pendingPointsBySeries.entrySet()) {
-            List<XYChart.Data<Number, Number>> pending = entry.getValue();
-            if (pending.isEmpty()) {
-                continue;
+        // Live series — reuse existing objects to preserve accumulated points
+        seriesModelById.clear();
+        for (int i = 0; i < liveSeries.size(); i++) {
+            ChartSeriesModel model = liveSeries.get(i);
+            XYChart.Series<Number, Number> series = seriesById.get(model.getId());
+            if (series == null) {
+                series = new XYChart.Series<Number, Number>();
+                seriesById.put(model.getId(), series);
+                enqueuedPointsBySeries.put(model.getId(), Integer.valueOf(0));
+                pendingPointsBySeries.put(model.getId(),
+                    new ArrayList<XYChart.Data<Number, Number>>());
             }
+            seriesModelById.put(model.getId(), model);
+            series.setName(model.getLabel());
+            allSeries.add(series);
+        }
 
-            int batchSize = Math.min(FLUSH_LIMIT, pending.size());
-            List<XYChart.Data<Number, Number>> batch =
-                new ArrayList<XYChart.Data<Number, Number>>(pending.subList(0, batchSize));
-            pending.subList(0, batchSize).clear();
-            XYChart.Series<Number, Number> series = seriesById.get(entry.getKey());
-            if (series != null) {
-                series.getData().addAll(batch);
-                flushed = true;
+        seriesById.keySet().retainAll(seriesModelById.keySet());
+        enqueuedPointsBySeries.keySet().retainAll(seriesModelById.keySet());
+        pendingPointsBySeries.keySet().retainAll(seriesModelById.keySet());
+
+        chart.setData(allSeries);
+    }
+
+    private void flushPendingPoints() {
+        boolean flushed = false;
+
+        if (!pendingPointsBySeries.isEmpty()) {
+            for (Map.Entry<String, List<XYChart.Data<Number, Number>>> entry : pendingPointsBySeries.entrySet()) {
+                List<XYChart.Data<Number, Number>> pending = entry.getValue();
+                if (pending.isEmpty()) {
+                    continue;
+                }
+                int batchSize = Math.min(FLUSH_LIMIT, pending.size());
+                List<XYChart.Data<Number, Number>> batch =
+                    new ArrayList<XYChart.Data<Number, Number>>(pending.subList(0, batchSize));
+                pending.subList(0, batchSize).clear();
+                XYChart.Series<Number, Number> series = seriesById.get(entry.getKey());
+                if (series != null) {
+                    series.getData().addAll(batch);
+                    flushed = true;
+                }
             }
         }
 
         if (flushed) {
             updateAxes();
-            applySeriesStyle();
         }
+        applySeriesStyle();
     }
 
     private void updateAxes() {
@@ -189,25 +257,21 @@ public final class LiveDynoChartView extends StackPane {
                     "-fx-stroke-width: 2.4px;"
             );
         }
-    }
-
-    private void syncSeries(List<ChartSeriesModel> seriesModels) {
-        ObservableList<XYChart.Series<Number, Number>> chartSeries = FXCollections.observableArrayList();
-        seriesModelById.clear();
-        for (int index = 0; index < seriesModels.size(); index++) {
-            ChartSeriesModel model = seriesModels.get(index);
-            XYChart.Series<Number, Number> series = seriesById.get(model.getId());
-            if (series == null) {
-                series = new XYChart.Series<Number, Number>();
-                seriesById.put(model.getId(), series);
-                enqueuedPointsBySeries.put(model.getId(), Integer.valueOf(0));
-                pendingPointsBySeries.put(model.getId(), new ArrayList<XYChart.Data<Number, Number>>());
+        for (Map.Entry<String, XYChart.Series<Number, Number>> entry : overlaySeriesById.entrySet()) {
+            XYChart.Series<Number, Number> series = entry.getValue();
+            if (series.getNode() == null) {
+                continue;
             }
-            seriesModelById.put(model.getId(), model);
-            series.setName(model.getLabel());
-            chartSeries.add(series);
+            ChartSeriesModel model = overlaySeriesModelById.get(entry.getKey());
+            if (model == null) {
+                continue;
+            }
+            series.getNode().setStyle(
+                "-fx-stroke: " + model.getColorHex() + ";" +
+                    "-fx-stroke-width: 1.6px;" +
+                    "-fx-opacity: 0.6;"
+            );
         }
-        chart.setData(chartSeries);
     }
 
     private String buildSeriesSignature(List<ChartSeriesModel> seriesModels) {

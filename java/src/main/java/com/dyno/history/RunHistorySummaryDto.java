@@ -22,6 +22,12 @@ public final class RunHistorySummaryDto {
     @JsonProperty("correction_mode")
     private String correctionMode;
 
+    @JsonProperty("vehicle_name")
+    private String vehicleName;
+
+    @JsonProperty("license_plate")
+    private String licensePlate;
+
     @JsonProperty("peak_power_hp")
     private Double peakPowerHp;
 
@@ -56,6 +62,14 @@ public final class RunHistorySummaryDto {
 
     public String getCorrectionMode() {
         return correctionMode;
+    }
+
+    public String getVehicleName() {
+        return vehicleName;
+    }
+
+    public String getLicensePlate() {
+        return licensePlate;
     }
 
     public Double getPeakPowerHp() {

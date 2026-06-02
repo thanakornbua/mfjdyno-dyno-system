@@ -1,5 +1,6 @@
 pub mod api;
 pub mod app;
+pub mod audit;
 pub mod bme280;
 pub mod calibration;
 pub mod can;

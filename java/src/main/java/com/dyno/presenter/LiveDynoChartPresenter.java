@@ -1,5 +1,7 @@
 package com.dyno.presenter;
 
+import com.dyno.history.OverlayRunData;
+import com.dyno.history.RunHistoryFrameDto;
 import com.dyno.model.FrameMessage;
 import com.dyno.state.ConnectionPhase;
 import com.dyno.state.LiveTelemetrySnapshot;
@@ -34,6 +36,7 @@ public final class LiveDynoChartPresenter {
     private Double datasetTimeOriginTs;
     private Double lastPlottedX;
     private List<SeriesState> seriesStates = Collections.emptyList();
+    private List<OverlayRunData> overlayRuns = Collections.emptyList();
 
     public LiveDynoChartPresenter(LiveTelemetryState liveTelemetryState) {
         this.latestSnapshot = liveTelemetryState.getSnapshot();
@@ -116,6 +119,16 @@ public final class LiveDynoChartPresenter {
         appendPoint(frame);
     }
 
+    public synchronized void setOverlayRuns(List<OverlayRunData> runs) {
+        overlayRuns = new ArrayList<OverlayRunData>(runs);
+        publish(buildViewModel());
+    }
+
+    public synchronized void clearOverlays() {
+        overlayRuns = Collections.emptyList();
+        publish(buildViewModel());
+    }
+
     private void beginNewRun() {
         datasetToken += 1L;
         datasetRunLabel = runLabel;
@@ -126,6 +139,7 @@ public final class LiveDynoChartPresenter {
         datasetTimeOriginTs = null;
         lastPlottedX = null;
         seriesStates = newSeriesState(datasetAxisSelection);
+        overlayRuns = Collections.emptyList();
     }
 
     private void appendPoint(FrameMessage frame) {
@@ -168,6 +182,7 @@ public final class LiveDynoChartPresenter {
     private LiveDynoChartModel buildViewModel() {
         RunAxisSelection displayedAxes = displayedAxisSelection();
         List<ChartSeriesModel> chartSeries = chartSeries(displayedAxes);
+        List<ChartSeriesModel> overlaySeries = buildOverlaySeries(displayedAxes);
         return new LiveDynoChartModel(
             datasetToken,
             displayRunLabel(),
@@ -178,8 +193,83 @@ public final class LiveDynoChartPresenter {
             "Selected Metrics",
             chartSeries,
             statusText(),
-            collectionOpen && isRecording(latestSnapshot.getFrame()) && latestSnapshot.getConnectionPhase() == ConnectionPhase.CONNECTED
+            collectionOpen && isRecording(latestSnapshot.getFrame()) && latestSnapshot.getConnectionPhase() == ConnectionPhase.CONNECTED,
+            overlayRuns.size(),
+            overlaySeries
         );
+    }
+
+    private List<ChartSeriesModel> buildOverlaySeries(RunAxisSelection axes) {
+        if (overlayRuns.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<RunChartAxis> yAxes = axes.yAxes();
+        List<ChartSeriesModel> result = new ArrayList<ChartSeriesModel>();
+        for (int ri = 0; ri < overlayRuns.size(); ri++) {
+            OverlayRunData run = overlayRuns.get(ri);
+            List<RunHistoryFrameDto> frames = run.getFrames();
+            Long runStartMs = frames.isEmpty() ? null : frames.get(0).getTsMs();
+            for (int yi = 0; yi < yAxes.size(); yi++) {
+                RunChartAxis yAxis = yAxes.get(yi);
+                String seriesId = "overlay:" + run.getRunId() + ":" + yAxis.name();
+                List<ChartPlotPoint> points = buildOverlayPoints(frames, axes.getXAxis(), yAxis, runStartMs);
+                if (!points.isEmpty()) {
+                    result.add(new ChartSeriesModel(
+                        seriesId,
+                        run.getLabel() + " " + yAxis.getLabel(),
+                        run.getColorHex(),
+                        points
+                    ));
+                }
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    private static List<ChartPlotPoint> buildOverlayPoints(
+        List<RunHistoryFrameDto> frames,
+        RunChartAxis xAxis,
+        RunChartAxis yAxis,
+        Long runStartMs
+    ) {
+        List<ChartPlotPoint> points = new ArrayList<ChartPlotPoint>();
+        double lastX = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < frames.size(); i++) {
+            RunHistoryFrameDto frame = frames.get(i);
+            Double xValue = historyXValue(frame, xAxis, runStartMs);
+            Double yValue = historyYValue(frame, yAxis);
+            if (xValue == null || yValue == null) continue;
+            if (!yAxis.shouldPlot(yValue)) continue;
+            if (xValue.doubleValue() < lastX) continue;
+            points.add(new ChartPlotPoint(xValue.doubleValue(), yValue.doubleValue()));
+            lastX = xValue.doubleValue();
+        }
+        return points;
+    }
+
+    private static Double historyXValue(RunHistoryFrameDto frame, RunChartAxis xAxis, Long runStartMs) {
+        switch (xAxis) {
+            case ENGINE_RPM: return frame.getEngineRpm();
+            case SPEED: return frame.getSpeedKmh();
+            case TIME:
+                if (frame.getTsMs() == null || runStartMs == null) return null;
+                return Double.valueOf((frame.getTsMs().doubleValue() - runStartMs.doubleValue()) / 1000.0);
+            default: return null;
+        }
+    }
+
+    private static Double historyYValue(RunHistoryFrameDto frame, RunChartAxis yAxis) {
+        switch (yAxis) {
+            case POWER: return frame.getPowerHp();
+            case TORQUE: return frame.getTorqueNm();
+            case AFR: return frame.getAfr();
+            case LAMBDA:
+                if (frame.getLambda() != null) return frame.getLambda();
+                if (frame.getAfr() != null) return Double.valueOf(frame.getAfr().doubleValue() / 14.7);
+                return null;
+            case ENGINE_RPM: return frame.getEngineRpm();
+            default: return null;
+        }
     }
 
     private String displayRunLabel() {

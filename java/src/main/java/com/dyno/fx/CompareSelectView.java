@@ -4,6 +4,7 @@ import com.dyno.history.HistoryApiClient;
 import com.dyno.history.RunHistorySummaryDto;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.collections.transformation.FilteredList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -16,6 +17,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
+import javafx.scene.control.TextField;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -32,6 +34,7 @@ import java.util.Optional;
 public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
     private final HistoryApiClient client;
     private final ObservableList<RunHistorySummaryDto> rows;
+    private final FilteredList<RunHistorySummaryDto> filteredRows;
     private final TableView<RunHistorySummaryDto> table = new TableView<RunHistorySummaryDto>();
     private final Label statusLabel = new Label("");
 
@@ -46,6 +49,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
     ) {
         this.client = client;
         this.rows = FXCollections.observableArrayList(runs);
+        this.filteredRows = new FilteredList<>(rows, p -> true);
 
         initOwner(owner);
         initModality(Modality.APPLICATION_MODAL);
@@ -60,7 +64,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         pane.setContent(buildContent());
 
         table.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-        table.setItems(rows);
+        table.setItems(filteredRows);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         installColumns();
         installButtons();
@@ -104,6 +108,17 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         Label note = new Label(UiText.text("Select 2 to 4 stored runs. Use Delete to remove one stored run."));
         note.setWrapText(true);
 
+        TextField searchField = new TextField();
+        searchField.setPromptText(UiText.text("Search by ID, date, vehicle, plate, HP, torque..."));
+        searchField.textProperty().addListener((obs, oldVal, newVal) -> {
+            String lower = newVal == null ? "" : newVal.trim().toLowerCase();
+            if (lower.isEmpty()) {
+                filteredRows.setPredicate(p -> true);
+            } else {
+                filteredRows.setPredicate(run -> matchesSearch(run, lower));
+            }
+        });
+
         HBox actionRow = new HBox(8);
         actionRow.setAlignment(Pos.CENTER_LEFT);
 
@@ -119,12 +134,22 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         statusLabel.setWrapText(true);
         statusLabel.setStyle("-fx-text-fill: " + FxTheme.toCss(FxTheme.TEXT_MUTED) + ";");
 
-        table.setMinWidth(760);
+        table.setMinWidth(900);
         table.setMinHeight(320);
 
-        VBox box = new VBox(10, title, note, actionRow, table);
+        VBox box = new VBox(10, title, note, searchField, actionRow, table);
         box.setPadding(new Insets(12));
         return box;
+    }
+
+    private static boolean matchesSearch(RunHistorySummaryDto run, String lower) {
+        if (run.getRunId() != null && run.getRunId().toString().contains(lower)) return true;
+        if (run.getDate() != null && run.getDate().toLowerCase().contains(lower)) return true;
+        if (run.getVehicleName() != null && run.getVehicleName().toLowerCase().contains(lower)) return true;
+        if (run.getLicensePlate() != null && run.getLicensePlate().toLowerCase().contains(lower)) return true;
+        if (run.getPeakPowerHp() != null && String.format("%.1f", run.getPeakPowerHp()).contains(lower)) return true;
+        if (run.getPeakTorqueNm() != null && String.format("%.1f", run.getPeakTorqueNm()).contains(lower)) return true;
+        return false;
     }
 
     private void installColumns() {
@@ -133,6 +158,18 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
 
         TableColumn<RunHistorySummaryDto, String> dateColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("DATE"));
         dateColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, String>("date"));
+
+        TableColumn<RunHistorySummaryDto, String> vehicleColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("VEHICLE"));
+        vehicleColumn.setCellValueFactory(cellData -> {
+            String v = cellData.getValue().getVehicleName();
+            return new javafx.beans.property.SimpleStringProperty(v != null ? v : "");
+        });
+
+        TableColumn<RunHistorySummaryDto, String> plateColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("PLATE"));
+        plateColumn.setCellValueFactory(cellData -> {
+            String p = cellData.getValue().getLicensePlate();
+            return new javafx.beans.property.SimpleStringProperty(p != null ? p : "");
+        });
 
         TableColumn<RunHistorySummaryDto, String> sourceColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("SOURCE"));
         sourceColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, String>("sourceMode"));
@@ -146,7 +183,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         TableColumn<RunHistorySummaryDto, Double> torqueColumn = new TableColumn<RunHistorySummaryDto, Double>(UiText.text("PEAK NM"));
         torqueColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, Double>("peakTorqueNm"));
 
-        table.getColumns().setAll(runIdColumn, dateColumn, sourceColumn, correctionColumn, powerColumn, torqueColumn);
+        table.getColumns().setAll(runIdColumn, dateColumn, vehicleColumn, plateColumn, sourceColumn, correctionColumn, powerColumn, torqueColumn);
     }
 
     private void installButtons() {

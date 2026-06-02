@@ -8,8 +8,9 @@ use dyno_types::LiveFrame;
 
 use crate::{
     api::ApiTask,
+    audit::AuditLogger,
     bme280::{AmbientSample, Bme280Task},
-    calibration::{CalibrationProfile, validate_profile},
+    calibration::{CalibrationLock, CalibrationProfile, validate_profile},
     can::{CanSample, CanTask},
     config::{Config, SourceMode},
     esp32_config::Esp32ConfigManager,
@@ -97,6 +98,8 @@ impl App {
         }
         let (calibration_tx, calibration_rx) = watch::channel(calibration.clone());
         let run_control = RunControl::new();
+        let calibration_lock = CalibrationLock::with_storage(storage.clone()).await;
+        let audit_logger = AuditLogger::new(storage.clone());
 
         let (live_tx, live_rx) = watch::channel::<LiveFrame>(FusionTask::idle_frame());
         let ws = WsTask::spawn(&config.ws_bind, live_rx.clone());
@@ -107,6 +110,8 @@ impl App {
             calibration_tx.clone(),
             startup_health.clone(),
             run_control.clone(),
+            calibration_lock,
+            audit_logger,
         );
         let state = StateMachine::new();
 

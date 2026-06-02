@@ -1,6 +1,9 @@
 package com.dyno.fx;
 
+import com.dyno.calibration.AuditLogView;
 import com.dyno.calibration.CalibrationApiClient;
+import com.dyno.history.OverlayRunData;
+import com.dyno.history.RunHistoryFrameSeriesDto;
 import com.dyno.calibration.CalibrationProfileDto;
 import com.dyno.calibration.CalibrationResponseDto;
 import com.dyno.control.RunConfigureRequest;
@@ -118,6 +121,21 @@ public final class OperatorConsoleStage {
             @Override
             public void onCalibrationRequested() {
                 handleCalibrationRequested();
+            }
+
+            @Override
+            public void onAuditLogRequested() {
+                handleAuditLogRequested();
+            }
+
+            @Override
+            public void onOverlayRunsRequested() {
+                handleOverlayRunsRequested();
+            }
+
+            @Override
+            public void onClearOverlaysRequested() {
+                handleClearOverlaysRequested();
             }
         });
 
@@ -341,6 +359,7 @@ public final class OperatorConsoleStage {
     }
 
     private void handleCalibrationRequested() {
+        if (!PasswordGateDialog.show(stage)) return;
         runControlState.setBusy(UiText.text("Loading calibration profiles..."));
         renderRoot();
 
@@ -359,7 +378,8 @@ public final class OperatorConsoleStage {
                     calibrationApiClient,
                     controlExecutor,
                     result.activeCalibration,
-                    result.profiles
+                    result.profiles,
+                    result.locked
                 );
                 if (dialogResult != null && dialogResult.getStatusMessage() != null) {
                     runControlState.showOperatorMessage(
@@ -369,6 +389,66 @@ public final class OperatorConsoleStage {
                 }
                 renderRoot();
             }));
+    }
+
+    private void handleAuditLogRequested() {
+        AuditLogView view = new AuditLogView(calibrationApiClient, controlExecutor);
+        Stage auditStage = new Stage();
+        auditStage.setTitle("Audit Log");
+        auditStage.setScene(new Scene(view, 900, 520));
+        auditStage.initOwner(stage);
+        auditStage.show();
+    }
+
+    private void handleOverlayRunsRequested() {
+        List<Long> selectedIds = OverlayPickerDialog.show(stage, historyApiClient, controlExecutor);
+        if (selectedIds == null || selectedIds.isEmpty()) return;
+
+        runControlState.setBusy(UiText.text("Loading overlay run data..."));
+        renderRoot();
+
+        final List<Long> ids = selectedIds;
+        CompletableFuture
+            .supplyAsync(() -> fetchOverlayData(ids), controlExecutor)
+            .thenAccept(loaded -> Platform.runLater(() -> {
+                runControlState.clearBusy();
+                chartPresenter.setOverlayRuns(loaded);
+                renderRoot();
+            }));
+    }
+
+    private void handleClearOverlaysRequested() {
+        chartPresenter.clearOverlays();
+        renderRoot();
+    }
+
+    private List<OverlayRunData> fetchOverlayData(List<Long> runIds) {
+        java.text.DecimalFormat fmt = new java.text.DecimalFormat("0.0");
+        List<OverlayRunData> result = new ArrayList<OverlayRunData>();
+        for (int i = 0; i < runIds.size(); i++) {
+            long id = runIds.get(i).longValue();
+            try {
+                RunHistoryFrameSeriesDto series = historyApiClient.getRunFrames(id);
+                List<com.dyno.history.RunHistoryFrameDto> frames =
+                    series != null && series.getFrames() != null
+                        ? series.getFrames()
+                        : Collections.<com.dyno.history.RunHistoryFrameDto>emptyList();
+                double peakHp = 0.0;
+                for (com.dyno.history.RunHistoryFrameDto f : frames) {
+                    if (f.getPowerHp() != null) {
+                        peakHp = Math.max(peakHp, f.getPowerHp().doubleValue());
+                    }
+                }
+                String label = "Run #" + id + " — peak " + fmt.format(peakHp) + " HP";
+                result.add(new OverlayRunData(id, label, frames, OverlayRunData.colorForIndex(i)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                // skip this run
+            }
+        }
+        return result;
     }
 
     private void loadCompareData(List<Long> runIds) {
@@ -409,10 +489,10 @@ public final class OperatorConsoleStage {
 
     private CalibrationResult fetchCalibrationData() {
         try {
-            return CalibrationResult.success(
-                calibrationApiClient.getActiveCalibration(),
-                calibrationApiClient.listCalibrationProfiles()
-            );
+            CalibrationResponseDto active = calibrationApiClient.getActiveCalibration();
+            List<CalibrationProfileDto> profiles = calibrationApiClient.listCalibrationProfiles();
+            boolean locked = calibrationApiClient.isCalibrationLocked();
+            return CalibrationResult.success(active, profiles, locked);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             return CalibrationResult.failure("Calibration request interrupted.");
@@ -666,23 +746,26 @@ public final class OperatorConsoleStage {
     private static final class CalibrationResult {
         private final CalibrationResponseDto activeCalibration;
         private final List<CalibrationProfileDto> profiles;
+        private final boolean locked;
         private final String error;
 
-        private CalibrationResult(CalibrationResponseDto activeCalibration, List<CalibrationProfileDto> profiles, String error) {
+        private CalibrationResult(CalibrationResponseDto activeCalibration, List<CalibrationProfileDto> profiles, boolean locked, String error) {
             this.activeCalibration = activeCalibration;
             this.profiles = profiles;
+            this.locked = locked;
             this.error = error;
         }
 
         private static CalibrationResult success(
             CalibrationResponseDto activeCalibration,
-            List<CalibrationProfileDto> profiles
+            List<CalibrationProfileDto> profiles,
+            boolean locked
         ) {
-            return new CalibrationResult(activeCalibration, profiles, null);
+            return new CalibrationResult(activeCalibration, profiles, locked, null);
         }
 
         private static CalibrationResult failure(String error) {
-            return new CalibrationResult(null, Collections.<CalibrationProfileDto>emptyList(), error);
+            return new CalibrationResult(null, Collections.<CalibrationProfileDto>emptyList(), false, error);
         }
     }
 

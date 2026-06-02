@@ -16,6 +16,7 @@ import javafx.collections.ObservableList;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
+import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
@@ -23,6 +24,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
+import javafx.scene.control.PasswordField;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
@@ -87,10 +89,16 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
     private final TextArea notesInput = new TextArea();
     private final CheckBox activateAfterSaveInput = new CheckBox(UiText.text("Activate after save"));
 
+    private final Label lockStatusLabel = new Label();
+    private final Button lockButton = new Button(UiText.text("LOCK"));
+    private final Button unlockButton = new Button(UiText.text("UNLOCK"));
+    private HBox lockBar;
+
     private CalibrationResponseDto activeResponse;
     private Result result;
     private boolean createMode;
     private boolean busy;
+    private boolean calibrationLocked;
     private long eventsRequestVersion;
 
     public CalibrationDialog(
@@ -98,11 +106,13 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         CalibrationApiClient client,
         Executor executor,
         CalibrationResponseDto activeResponse,
-        List<CalibrationProfileDto> profiles
+        List<CalibrationProfileDto> profiles,
+        boolean locked
     ) {
         this.client = client;
         this.executor = executor;
         this.activeResponse = activeResponse;
+        this.calibrationLocked = locked;
         this.rows = FXCollections.observableArrayList(profiles == null ? Collections.<CalibrationProfileDto>emptyList() : profiles);
         this.createMode = this.rows.isEmpty();
 
@@ -140,9 +150,10 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         CalibrationApiClient client,
         Executor executor,
         CalibrationResponseDto activeResponse,
-        List<CalibrationProfileDto> profiles
+        List<CalibrationProfileDto> profiles,
+        boolean locked
     ) {
-        CalibrationDialog dialog = new CalibrationDialog(owner, client, executor, activeResponse, profiles);
+        CalibrationDialog dialog = new CalibrationDialog(owner, client, executor, activeResponse, profiles, locked);
         Optional<Result> result = dialog.showAndWait();
         return result.orElse(null);
     }
@@ -154,6 +165,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         Label note = new Label(UiText.text("Inspect stored calibration profiles and manage create/edit/duplicate/activate actions."));
         note.setWrapText(true);
 
+        lockBar = buildLockBar();
         VBox activeBox = titledCard(UiText.text("ACTIVE PROFILE"), activeNameLabel, activeDetailsLabel, activeValidationLabel);
         VBox formBox = buildFormBox();
         VBox auditBox = buildAuditBox();
@@ -173,10 +185,19 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         statusLabel.setTextFill(FxTheme.TEXT_MUTED);
 
         HBox actions = new HBox(8, createNewButton, saveButton, duplicateButton);
-        VBox box = new VBox(12, title, note, activeBox, table, actions, formBox, auditBox, runtimeNoteLabel, statusLabel);
+        VBox box = new VBox(12, title, note, lockBar, activeBox, table, actions, formBox, auditBox, runtimeNoteLabel, statusLabel);
         box.setPadding(new Insets(12));
         VBox.setVgrow(table, Priority.ALWAYS);
         return box;
+    }
+
+    private HBox buildLockBar() {
+        lockStatusLabel.setStyle("-fx-font-size: 15px; -fx-font-weight: bold;");
+        HBox bar = new HBox(12, lockStatusLabel, lockButton, unlockButton);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        bar.setPadding(new Insets(8, 10, 8, 10));
+        bar.setStyle(FxTheme.cardStyle(FxTheme.SURFACE_ALT));
+        return bar;
     }
 
     private VBox buildFormBox() {
@@ -300,6 +321,9 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         saveButton.setOnAction(event -> handleSave());
         duplicateButton.setOnAction(event -> handleDuplicate());
 
+        lockButton.setOnAction(event -> handleLock());
+        unlockButton.setOnAction(event -> handleUnlock());
+
         installFormRefresh(nameInput);
         installFormRefresh(rollerDiameterInput);
         installFormRefresh(pulsesPerRevInput);
@@ -326,6 +350,84 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
 
     private void installFormRefresh(TextArea input) {
         input.textProperty().addListener((obs, oldValue, newValue) -> refreshView(null, null));
+    }
+
+    private void handleLock() {
+        setBusy(true, UiText.text("Locking calibration..."));
+        CompletableFuture
+            .supplyAsync(() -> {
+                try {
+                    client.lockCalibration("MFJ123456");
+                    return Boolean.TRUE;
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                }
+            }, executor)
+            .thenAccept(ok -> Platform.runLater(() -> {
+                calibrationLocked = true;
+                setBusy(false, null);
+                refreshView(UiText.text("Calibration locked."), OperatorViewModel.Tone.NORMAL);
+            }))
+            .exceptionally(err -> {
+                Platform.runLater(() -> handleLockFailure(err));
+                return null;
+            });
+    }
+
+    private void handleUnlock() {
+        PasswordField pwdField = new PasswordField();
+        pwdField.setPromptText(UiText.text("Password"));
+        ButtonType confirmType = new ButtonType(UiText.text("Confirm"), ButtonBar.ButtonData.OK_DONE);
+        Dialog<String> pwdDialog = new Dialog<String>();
+        pwdDialog.setTitle(UiText.text("Unlock Calibration"));
+        pwdDialog.setHeaderText(UiText.text("Enter password to unlock calibration"));
+        pwdDialog.initOwner(getOwner());
+        pwdDialog.initModality(Modality.APPLICATION_MODAL);
+        pwdDialog.getDialogPane().getButtonTypes().addAll(confirmType, ButtonType.CANCEL);
+        pwdDialog.getDialogPane().setContent(new VBox(8, new Label(UiText.text("Password:")), pwdField));
+        pwdDialog.setResultConverter(bt -> confirmType.equals(bt) ? pwdField.getText() : null);
+        Optional<String> pwd = pwdDialog.showAndWait();
+        if (!pwd.isPresent() || pwd.get().trim().isEmpty()) {
+            return;
+        }
+        final String password = pwd.get().trim();
+        setBusy(true, UiText.text("Unlocking calibration..."));
+        CompletableFuture
+            .supplyAsync(() -> {
+                try {
+                    client.unlockCalibration(password);
+                    return Boolean.TRUE;
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                }
+            }, executor)
+            .thenAccept(ok -> Platform.runLater(() -> {
+                calibrationLocked = false;
+                setBusy(false, null);
+                refreshView(UiText.text("Calibration unlocked."), OperatorViewModel.Tone.NORMAL);
+            }))
+            .exceptionally(err -> {
+                Platform.runLater(() -> handleLockFailure(err));
+                return null;
+            });
+    }
+
+    private void handleLockFailure(Throwable throwable) {
+        setBusy(false, null);
+        Throwable root = rootCause(throwable);
+        if (root instanceof CalibrationApiClient.LockException) {
+            int code = ((CalibrationApiClient.LockException) root).statusCode;
+            String msg = code == 401 ? UiText.text("Wrong password.")
+                : code == 423 ? UiText.text("Calibration is already in the requested lock state.")
+                : UiText.text("Lock operation failed (HTTP ") + code + ").";
+            OperatorViewModel.Tone tone = code == 423 ? OperatorViewModel.Tone.CAUTION : OperatorViewModel.Tone.ALERT;
+            refreshView(msg, tone);
+        } else if (root instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+            refreshView(UiText.text("Lock operation interrupted."), OperatorViewModel.Tone.ALERT);
+        } else {
+            refreshView(UiText.text("Lock operation failed: ") + root.getMessage(), OperatorViewModel.Tone.ALERT);
+        }
     }
 
     private void handleSave() {
@@ -571,7 +673,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
     private void updateActionState() {
         ParsedForm parsed = parseForm();
         boolean hasSelected = hasSelectedProfile();
-        boolean formEditable = !busy && (createMode || hasSelected);
+        boolean formEditable = !busy && !calibrationLocked && (createMode || hasSelected);
 
         nameInput.setDisable(!formEditable);
         rollerDiameterInput.setDisable(!formEditable);
@@ -583,10 +685,10 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         notesInput.setDisable(!formEditable);
         activateAfterSaveInput.setDisable(!formEditable);
 
-        createNewButton.setDisable(busy);
-        duplicateButton.setDisable(busy || !hasSelected);
+        createNewButton.setDisable(busy || calibrationLocked);
+        duplicateButton.setDisable(busy || calibrationLocked || !hasSelected);
         saveButton.setText(createMode ? UiText.text("CREATE PROFILE") : UiText.text("SAVE CHANGES"));
-        saveButton.setDisable(busy || (!createMode && !hasSelected) || !parsed.validation.isValid());
+        saveButton.setDisable(busy || calibrationLocked || (!createMode && !hasSelected) || !parsed.validation.isValid());
 
         Node activateNode = getDialogPane().lookupButton(activateType);
         if (activateNode instanceof Button) {
@@ -594,8 +696,24 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             CalibrationProfileDto selected = table.getSelectionModel().getSelectedItem();
             CalibrationValidationDto selectedValidation = validateSelection(selected);
             boolean sameAsActive = selected != null && selected.getProfileId() != null && selected.getProfileId().equals(activeProfileId());
-            button.setDisable(busy || selected == null || selected.getProfileId() == null || sameAsActive || !selectedValidation.isValid());
+            button.setDisable(busy || calibrationLocked || selected == null || selected.getProfileId() == null || sameAsActive || !selectedValidation.isValid());
         }
+
+        lockStatusLabel.setText(calibrationLocked ? "🔒 " + UiText.text("LOCKED") : "🔓 " + UiText.text("UNLOCKED"));
+        lockStatusLabel.setTextFill(calibrationLocked ? FxTheme.ALERT : FxTheme.SUCCESS);
+        lockButton.setVisible(!calibrationLocked);
+        lockButton.setManaged(!calibrationLocked);
+        unlockButton.setVisible(calibrationLocked);
+        unlockButton.setManaged(calibrationLocked);
+        lockButton.setDisable(busy);
+        unlockButton.setDisable(busy);
+        lockBar.setStyle(
+            "-fx-background-color: " + toRgbaCss(calibrationLocked ? FxTheme.ALERT : FxTheme.SUCCESS, 0.15) + ";" +
+            "-fx-background-radius: 10;" +
+            "-fx-border-color: " + FxTheme.toCss(calibrationLocked ? FxTheme.ALERT : FxTheme.SUCCESS) + ";" +
+            "-fx-border-width: 1;" +
+            "-fx-border-radius: 10;"
+        );
     }
 
     private ParsedForm parseForm() {
@@ -872,6 +990,14 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             current = current.getCause();
         }
         return current;
+    }
+
+    private static String toRgbaCss(Color color, double alpha) {
+        return "rgba(" +
+            (int) Math.round(color.getRed() * 255) + "," +
+            (int) Math.round(color.getGreen() * 255) + "," +
+            (int) Math.round(color.getBlue() * 255) + "," +
+            alpha + ")";
     }
 
     private static final class ParsedForm {

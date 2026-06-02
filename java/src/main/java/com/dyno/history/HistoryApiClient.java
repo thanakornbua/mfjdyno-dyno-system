@@ -63,6 +63,25 @@ public final class HistoryApiClient {
         return send(request, CompareRunsResponseDto.class);
     }
 
+    public RepeatabilityReportDto getRepeatabilityReport(List<Long> runIds) throws IOException, InterruptedException {
+        StringBuilder path = new StringBuilder("/api/runs/repeatability?ids=");
+        for (int i = 0; i < runIds.size(); i++) {
+            if (i > 0) path.append(',');
+            path.append(runIds.get(i));
+        }
+        HttpRequest request = requestBuilder(path.toString()).GET().build();
+        return send(request, RepeatabilityReportDto.class);
+    }
+
+    public RunHistorySummaryDto updateRunMetadata(long runId, String vehicleName, String licensePlate) throws IOException, InterruptedException {
+        String body = mapper.writeValueAsString(new UpdateRunMetadataRequestDto(vehicleName, licensePlate));
+        HttpRequest request = requestBuilder("/api/runs/" + runId)
+            .header("Content-Type", "application/json")
+            .method("PATCH", HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        return send(request, RunHistorySummaryDto.class);
+    }
+
     public boolean deleteRun(long runId) throws IOException, InterruptedException {
         HttpRequest request = requestBuilder("/api/runs/" + runId)
             .DELETE()
@@ -140,5 +159,20 @@ public final class HistoryApiClient {
             t = t.getCause();
         }
         return false;
+    }
+
+    private static final class UpdateRunMetadataRequestDto {
+        @com.fasterxml.jackson.annotation.JsonProperty("vehicle_name")
+        private final String vehicleName;
+        @com.fasterxml.jackson.annotation.JsonProperty("license_plate")
+        private final String licensePlate;
+
+        UpdateRunMetadataRequestDto(String vehicleName, String licensePlate) {
+            this.vehicleName = vehicleName;
+            this.licensePlate = licensePlate;
+        }
+
+        public String getVehicleName() { return vehicleName; }
+        public String getLicensePlate() { return licensePlate; }
     }
 }

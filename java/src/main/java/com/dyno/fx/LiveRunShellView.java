@@ -31,6 +31,12 @@ public final class LiveRunShellView extends BorderPane {
         void onCompareRequested();
 
         void onCalibrationRequested();
+
+        void onAuditLogRequested();
+
+        void onOverlayRunsRequested();
+
+        void onClearOverlaysRequested();
     }
 
     public enum LayoutTier {
@@ -88,6 +94,12 @@ public final class LiveRunShellView extends BorderPane {
     private final Label axisTitle = new Label(UiText.text("SELECTED AXES"));
     private final Label runConfigSummary = new Label(UiText.text("X: Engine RPM | Y1: Power | Y2: Torque | Y3: AFR"));
     private final Label runConfigHint = new Label(UiText.text("Run/chart configuration stays tied to run setup and chart context."));
+    private final javafx.scene.control.Button overlayPickerButton =
+        new javafx.scene.control.Button(UiText.text("OVERLAY RUNS"));
+    private final javafx.scene.control.Button clearOverlaysButton =
+        new javafx.scene.control.Button(UiText.text("CLEAR OVERLAYS"));
+    private final Label overlayIndicator = new Label();
+
     private final Label hooksTitle = new Label(UiText.text("COMPARE / PRINT"));
     private final Label hooksHint = new Label(UiText.text("Compare selection and print/export remain future chart-adjacent hooks."));
 
@@ -136,6 +148,18 @@ public final class LiveRunShellView extends BorderPane {
             @Override
             public void onCalibrationRequested() {
             }
+
+            @Override
+            public void onAuditLogRequested() {
+            }
+
+            @Override
+            public void onOverlayRunsRequested() {
+            }
+
+            @Override
+            public void onClearOverlaysRequested() {
+            }
         });
     }
 
@@ -182,10 +206,24 @@ public final class LiveRunShellView extends BorderPane {
             new Runnable() {
                 @Override
                 public void run() {
+                    controlActions.onAuditLogRequested();
+                }
+            },
+            new Runnable() {
+                @Override
+                public void run() {
                     toggleLanguage();
                 }
             }
         );
+        overlayPickerButton.setOnAction(e -> controlActions.onOverlayRunsRequested());
+        clearOverlaysButton.setOnAction(e -> controlActions.onClearOverlaysRequested());
+        overlayPickerButton.setStyle("-fx-font-size: 11px; -fx-font-weight: bold;");
+        clearOverlaysButton.setStyle("-fx-font-size: 11px; -fx-font-weight: bold;");
+        overlayIndicator.setStyle("-fx-font-size: 11px; -fx-font-weight: bold; -fx-text-fill: #EAB308;");
+        clearOverlaysButton.setVisible(false);
+        overlayIndicator.setVisible(false);
+
         leftRail = buildLeftRail();
         chartArea = buildChartArea();
         chartSidebar = buildChartSidebar();
@@ -271,6 +309,15 @@ public final class LiveRunShellView extends BorderPane {
         runModeTorqueValue.setText(model.getTorqueTile().getValueText() + " Nm");
 
         chartRunLabel.setText(UiText.text(chartModel.getRunLabel()));
+        int overlayCount = chartModel.getOverlayRunCount();
+        if (overlayCount > 0) {
+            overlayIndicator.setText(overlayCount + " " + UiText.text("runs overlaid"));
+            overlayIndicator.setVisible(true);
+            clearOverlaysButton.setVisible(true);
+        } else {
+            overlayIndicator.setVisible(false);
+            clearOverlaysButton.setVisible(false);
+        }
         chartCaption.setText(UiText.text(chartModel.getChartCaption()));
         chartSummary.setText(UiText.text(chartModel.getSummaryText()));
         chartNote.setText(UiText.text(chartModel.getStatusText()));
@@ -752,10 +799,20 @@ public final class LiveRunShellView extends BorderPane {
         chartNote.setFont(Font.font("SansSerif", FontWeight.NORMAL, 16));
         chartNote.setWrapText(true);
 
+        Region headerSpacer = new Region();
+        HBox.setHgrow(headerSpacer, Priority.ALWAYS);
+
+        HBox overlayButtonRow = new HBox(6, overlayPickerButton, overlayIndicator);
+        overlayButtonRow.setAlignment(Pos.CENTER_LEFT);
+        VBox overlayControls = new VBox(4, overlayButtonRow, clearOverlaysButton);
+        overlayControls.setAlignment(Pos.TOP_RIGHT);
+
         HBox headerRow = new HBox(12);
         headerRow.setAlignment(Pos.CENTER_LEFT);
         headerRow.getChildren().addAll(
-            new VBox(4, chartTitle, chartRunLabel)
+            new VBox(4, chartTitle, chartRunLabel),
+            headerSpacer,
+            overlayControls
         );
 
         VBox plotArea = new VBox(10);

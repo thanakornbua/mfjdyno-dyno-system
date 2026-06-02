@@ -15,6 +15,8 @@ public final class LiveDynoChartModel {
     private final List<ChartSeriesModel> series;
     private final String statusText;
     private final boolean collecting;
+    private final int overlayRunCount;
+    private final List<ChartSeriesModel> overlaySeries;
 
     public LiveDynoChartModel(
         long datasetToken,
@@ -28,6 +30,25 @@ public final class LiveDynoChartModel {
         String statusText,
         boolean collecting
     ) {
+        this(datasetToken, runLabel, chartCaption, axisSummaryText, summaryText,
+            xAxisLabel, yAxisLabel, series, statusText, collecting, 0,
+            Collections.<ChartSeriesModel>emptyList());
+    }
+
+    public LiveDynoChartModel(
+        long datasetToken,
+        String runLabel,
+        String chartCaption,
+        String axisSummaryText,
+        String summaryText,
+        String xAxisLabel,
+        String yAxisLabel,
+        List<ChartSeriesModel> series,
+        String statusText,
+        boolean collecting,
+        int overlayRunCount,
+        List<ChartSeriesModel> overlaySeries
+    ) {
         this.datasetToken = datasetToken;
         this.runLabel = runLabel;
         this.chartCaption = chartCaption;
@@ -38,6 +59,8 @@ public final class LiveDynoChartModel {
         this.series = Collections.unmodifiableList(new ArrayList<ChartSeriesModel>(series));
         this.statusText = statusText;
         this.collecting = collecting;
+        this.overlayRunCount = overlayRunCount;
+        this.overlaySeries = Collections.unmodifiableList(new ArrayList<ChartSeriesModel>(overlaySeries));
     }
 
     public long getDatasetToken() {
@@ -78,6 +101,14 @@ public final class LiveDynoChartModel {
 
     public boolean isCollecting() {
         return collecting;
+    }
+
+    public int getOverlayRunCount() {
+        return overlayRunCount;
+    }
+
+    public List<ChartSeriesModel> getOverlaySeries() {
+        return overlaySeries;
     }
 
     public boolean hasPlottedData() {

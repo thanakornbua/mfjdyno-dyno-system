@@ -5,6 +5,7 @@
 //! async `StorageTask` watches the fused `LiveFrame` stream and forwards frames
 //! into that worker.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +21,7 @@ use tracing::{debug, info, warn};
 use dyno_types::{LiveFrame, RunState, RunSummary};
 
 use crate::{
+    audit::{AuditEvent, AuditRecord},
     calibration::{
         CalibrationProfile, CalibrationProfileChange, CalibrationProfileEvent,
         CalibrationProfileEventType, CalibrationProfileInput,
@@ -96,10 +98,27 @@ ON calibration_profile_events(profile_id, created_at_ms DESC, event_id DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_calibration_profiles_single_active
 ON calibration_profiles(is_active)
 WHERE is_active = 1;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at_ms INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    calibration_profile_id INTEGER NULL,
+    params_snapshot TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at_ms ON audit_log(occurred_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 const STORAGE_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_LIST_LIMIT: usize = 20;
+/// Maximum number of frames held in the pre-run ring buffer (≈3 s at 100 Hz).
+const PRE_RUN_BUFFER_CAP: usize = 300;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredFrame {
@@ -128,6 +147,8 @@ pub struct StoredRun {
     pub correction_mode: CorrectionMode,
     pub calibration_profile_id: Option<i64>,
     pub calibration_profile_name: Option<String>,
+    pub vehicle_name: Option<String>,
+    pub license_plate: Option<String>,
     pub roller_diameter_m: f32,
     pub encoder_pulses_per_rev: f32,
     pub roller_inertia_kg_m2: f32,
@@ -158,6 +179,10 @@ struct RecordingConfig {
 struct RecorderState {
     active_run_id: Option<i64>,
     last_frame_ts_ms: Option<i64>,
+    /// Rolling window of recent frames kept regardless of run state.
+    /// Drained into DB at the moment a new run opens so the chart has context
+    /// before the official recording start.
+    pre_run_buffer: VecDeque<LiveFrame>,
 }
 
 enum Command {
@@ -215,6 +240,34 @@ enum Command {
     DeleteRun {
         run_id: i64,
         reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    UpdateRunMetadata {
+        run_id: i64,
+        vehicle_name: Option<String>,
+        license_plate: Option<String>,
+        reply: oneshot::Sender<anyhow::Result<Option<StoredRun>>>,
+    },
+    InsertAuditRecord {
+        event: AuditEvent,
+        profile_id: Option<i64>,
+        snapshot: serde_json::Value,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    ListAuditRecords {
+        reply: oneshot::Sender<anyhow::Result<Vec<AuditRecord>>>,
+    },
+    GetPeakValuesForRuns {
+        run_ids: Vec<i64>,
+        reply: oneshot::Sender<anyhow::Result<Vec<(i64, f64, f64, Option<f64>)>>>,
+    },
+    GetSetting {
+        key: String,
+        reply: oneshot::Sender<anyhow::Result<Option<String>>>,
+    },
+    SetSetting {
+        key: String,
+        value: String,
+        reply: oneshot::Sender<anyhow::Result<()>>,
     },
     Flush {
         reply: oneshot::Sender<anyhow::Result<()>>,
@@ -433,6 +486,27 @@ impl Storage {
             .context("storage worker dropped set-active-calibration reply")?
     }
 
+    pub async fn update_run_metadata(
+        &self,
+        run_id: i64,
+        vehicle_name: Option<String>,
+        license_plate: Option<String>,
+    ) -> anyhow::Result<Option<StoredRun>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::UpdateRunMetadata {
+                run_id,
+                vehicle_name,
+                license_plate,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped update-run-metadata reply")?
+    }
+
     pub async fn delete_run(&self, run_id: i64) -> anyhow::Result<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -445,6 +519,84 @@ impl Storage {
         reply_rx
             .await
             .context("storage worker dropped delete-run reply")?
+    }
+
+    pub async fn insert_audit_record(
+        &self,
+        event: AuditEvent,
+        profile_id: Option<i64>,
+        snapshot: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::InsertAuditRecord {
+                event,
+                profile_id,
+                snapshot,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped insert-audit-record reply")?
+    }
+
+    pub async fn list_audit_records(&self) -> anyhow::Result<Vec<AuditRecord>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::ListAuditRecords { reply: reply_tx })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped list-audit-records reply")?
+    }
+
+    pub async fn get_peak_values_for_runs(
+        &self,
+        run_ids: &[i64],
+    ) -> anyhow::Result<Vec<(i64, f64, f64, Option<f64>)>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::GetPeakValuesForRuns {
+                run_ids: run_ids.to_vec(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped peak-values reply")?
+    }
+
+    pub async fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::GetSetting {
+                key: key.to_owned(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped get-setting reply")?
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::SetSetting {
+                key: key.to_owned(),
+                value: value.to_owned(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped set-setting reply")?
     }
 
     pub async fn flush(&self) -> anyhow::Result<()> {
@@ -595,6 +747,34 @@ fn storage_worker(
             Command::DeleteRun { run_id, reply } => {
                 let _ = reply.send(delete_run(&conn, run_id));
             }
+            Command::UpdateRunMetadata {
+                run_id,
+                vehicle_name,
+                license_plate,
+                reply,
+            } => {
+                let _ = reply.send(db_update_run_metadata(&conn, run_id, vehicle_name, license_plate));
+            }
+            Command::InsertAuditRecord {
+                event,
+                profile_id,
+                snapshot,
+                reply,
+            } => {
+                let _ = reply.send(db_insert_audit_record(&conn, event, profile_id, snapshot));
+            }
+            Command::ListAuditRecords { reply } => {
+                let _ = reply.send(db_list_audit_records(&conn));
+            }
+            Command::GetPeakValuesForRuns { run_ids, reply } => {
+                let _ = reply.send(db_get_peak_values_for_runs(&conn, &run_ids));
+            }
+            Command::GetSetting { key, reply } => {
+                let _ = reply.send(db_get_setting(&conn, &key));
+            }
+            Command::SetSetting { key, value, reply } => {
+                let _ = reply.send(db_set_setting(&conn, &key, &value));
+            }
             Command::Flush { reply } => {
                 let _ = reply.send(Ok(()));
             }
@@ -602,7 +782,7 @@ fn storage_worker(
     }
 
     if let Some(run_id) = state.active_run_id {
-        let ended_at_ms = state.last_frame_ts_ms.unwrap_or_else(current_time_ms);
+        let ended_at_ms = current_time_ms();
         if let Err(err) = close_run(&conn, run_id, ended_at_ms) {
             warn!("storage: failed to close active run {run_id} during shutdown: {err:#}");
         }
@@ -635,6 +815,8 @@ fn open_connection(db_path: &Path) -> anyhow::Result<Connection> {
 fn apply_storage_migrations(conn: &Connection) -> anyhow::Result<()> {
     ensure_column_exists(conn, "runs", "calibration_profile_id", "INTEGER NULL")?;
     ensure_column_exists(conn, "runs", "calibration_profile_name", "TEXT NULL")?;
+    ensure_column_exists(conn, "runs", "vehicle_name", "TEXT NULL")?;
+    ensure_column_exists(conn, "runs", "license_plate", "TEXT NULL")?;
     Ok(())
 }
 
@@ -1080,20 +1262,43 @@ fn handle_live_frame(
     state: &mut RecorderState,
     frame: &LiveFrame,
 ) -> anyhow::Result<()> {
+    // Feed the pre-run ring buffer with every frame regardless of run state.
+    // The oldest entry is dropped when the buffer exceeds its fixed capacity.
+    state.pre_run_buffer.push_back(frame.clone());
+    if state.pre_run_buffer.len() > PRE_RUN_BUFFER_CAP {
+        state.pre_run_buffer.pop_front();
+    }
+
+    // Track whether the current frame was already written as part of the
+    // pre-run drain so we do not double-insert it via the normal append path.
+    let mut drained_at_start = false;
+
     if state.active_run_id.is_none() && frame.run_state == RunState::Recording {
-        let run_id = create_run(conn, recording, frame.ts_ms)?;
+        let run_id = create_run(conn, recording)?;
         state.active_run_id = Some(run_id);
         debug!("storage: opened run {run_id} at {}", frame.ts_ms);
+
+        // Drain the entire ring buffer (which includes the current Recording
+        // frame as its last entry) and persist all frames in original timestamp
+        // order as the opening context of the new run.
+        let pre_run: Vec<LiveFrame> = state.pre_run_buffer.drain(..).collect();
+        for pre_frame in &pre_run {
+            append_frame(conn, run_id, pre_frame)?;
+        }
+        state.last_frame_ts_ms = pre_run.last().map(|f| f.ts_ms);
+        drained_at_start = true;
     }
 
     if let Some(run_id) = state.active_run_id {
         match frame.run_state {
             RunState::Recording | RunState::Stopping => {
-                append_frame(conn, run_id, frame)?;
-                state.last_frame_ts_ms = Some(frame.ts_ms);
+                if !drained_at_start {
+                    append_frame(conn, run_id, frame)?;
+                    state.last_frame_ts_ms = Some(frame.ts_ms);
+                }
             }
             RunState::Idle | RunState::Armed | RunState::Fault => {
-                close_run(conn, run_id, frame.ts_ms)?;
+                close_run(conn, run_id, current_time_ms())?;
                 debug!("storage: closed run {run_id} at {}", frame.ts_ms);
                 state.active_run_id = None;
                 state.last_frame_ts_ms = None;
@@ -1104,9 +1309,10 @@ fn handle_live_frame(
     Ok(())
 }
 
-fn create_run(conn: &Connection, recording: &RecordingConfig, started_at_ms: i64) -> anyhow::Result<i64> {
+fn create_run(conn: &Connection, recording: &RecordingConfig) -> anyhow::Result<i64> {
     let calibration = fetch_active_calibration_profile(conn)?
         .ok_or_else(|| anyhow!("active calibration profile is missing"))?;
+    let started_at_ms = current_time_ms();
     conn.execute(
         r#"
         INSERT INTO runs (
@@ -1231,7 +1437,9 @@ fn query_recent_runs(conn: &Connection, limit: usize) -> anyhow::Result<Vec<Stor
                     WHERE f.run_id = r.run_id AND f.torque_nm IS NOT NULL
                     ORDER BY f.torque_nm DESC, f.ts_ms ASC
                     LIMIT 1
-                ), 0.0) AS peak_torque_rpm
+                ), 0.0) AS peak_torque_rpm,
+                r.vehicle_name,
+                r.license_plate
             FROM runs r
             ORDER BY r.started_at_ms DESC
             LIMIT ?1
@@ -1293,7 +1501,9 @@ fn query_run(conn: &Connection, run_id: i64) -> anyhow::Result<Option<StoredRun>
                     WHERE f.run_id = r.run_id AND f.torque_nm IS NOT NULL
                     ORDER BY f.torque_nm DESC, f.ts_ms ASC
                     LIMIT 1
-                ), 0.0) AS peak_torque_rpm
+                ), 0.0) AS peak_torque_rpm,
+                r.vehicle_name,
+                r.license_plate
             FROM runs r
             WHERE r.run_id = ?1
             "#,
@@ -1325,6 +1535,8 @@ fn map_stored_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRun> {
         peak_power_rpm: row.get(12)?,
         peak_torque_nm: row.get(13)?,
         peak_torque_rpm: row.get(14)?,
+        vehicle_name: row.get(15)?,
+        license_plate: row.get(16)?,
     })
 }
 
@@ -1629,11 +1841,149 @@ fn parse_event_json(value: Option<String>) -> rusqlite::Result<Option<serde_json
         .transpose()
 }
 
+fn db_update_run_metadata(
+    conn: &Connection,
+    run_id: i64,
+    vehicle_name: Option<String>,
+    license_plate: Option<String>,
+) -> anyhow::Result<Option<StoredRun>> {
+    let updated = conn.execute(
+        "UPDATE runs SET vehicle_name = ?1, license_plate = ?2 WHERE run_id = ?3",
+        params![vehicle_name.as_deref(), license_plate.as_deref(), run_id],
+    )
+    .with_context(|| format!("failed to update run metadata for run {run_id}"))?;
+    if updated == 0 {
+        return Ok(None);
+    }
+    query_run(conn, run_id)
+}
+
 fn delete_run(conn: &Connection, run_id: i64) -> anyhow::Result<bool> {
     let deleted = conn
         .execute("DELETE FROM runs WHERE run_id = ?1", [run_id])
         .with_context(|| format!("failed to delete run {run_id}"))?;
     Ok(deleted > 0)
+}
+
+fn db_insert_audit_record(
+    conn: &Connection,
+    event: AuditEvent,
+    profile_id: Option<i64>,
+    snapshot: serde_json::Value,
+) -> anyhow::Result<()> {
+    let snapshot_str =
+        serde_json::to_string(&snapshot).context("failed to serialize audit snapshot")?;
+    let now_ms = current_time_ms();
+    conn.execute(
+        r#"
+        INSERT INTO audit_log (occurred_at_ms, event, calibration_profile_id, params_snapshot)
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+        params![now_ms, event.to_string(), profile_id, snapshot_str],
+    )
+    .context("failed to insert audit record")?;
+    Ok(())
+}
+
+fn db_list_audit_records(conn: &Connection) -> anyhow::Result<Vec<AuditRecord>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, occurred_at_ms, event, calibration_profile_id, params_snapshot
+            FROM audit_log
+            ORDER BY occurred_at_ms DESC
+            LIMIT 500
+            "#,
+        )
+        .context("failed to prepare audit log list query")?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let occurred_at_ms: i64 = row.get(1)?;
+            let event_str: String = row.get(2)?;
+            let snapshot_str: String = row.get(4)?;
+            Ok((row.get::<_, i64>(0)?, occurred_at_ms, event_str, row.get::<_, Option<i64>>(3)?, snapshot_str))
+        })
+        .context("failed to execute audit log list query")?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        let (id, occurred_at_ms, event_str, profile_id, snapshot_str) =
+            row.context("failed to map audit log row")?;
+        let event = event_str
+            .parse::<AuditEvent>()
+            .map_err(|_| anyhow!("unknown audit event type: {event_str}"))?;
+        let occurred_at = datetime_from_ms(occurred_at_ms)?;
+        let params_snapshot: serde_json::Value = serde_json::from_str(&snapshot_str)
+            .context("failed to deserialize audit snapshot")?;
+        records.push(AuditRecord {
+            id,
+            occurred_at,
+            event,
+            calibration_profile_id: profile_id,
+            params_snapshot,
+        });
+    }
+    Ok(records)
+}
+
+fn db_get_peak_values_for_runs(
+    conn: &Connection,
+    run_ids: &[i64],
+) -> anyhow::Result<Vec<(i64, f64, f64, Option<f64>)>> {
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = (1..=run_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let sql = format!(
+        "SELECT run_id, MAX(power_hp), MAX(torque_nm), MAX(speed_kmh)
+         FROM frames
+         WHERE run_id IN ({placeholders})
+         GROUP BY run_id
+         HAVING MAX(power_hp) IS NOT NULL AND MAX(torque_nm) IS NOT NULL"
+    );
+
+    let mut stmt = conn.prepare(&sql).context("failed to prepare peak-values query")?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(run_ids.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, Option<f64>>(3)?,
+            ))
+        })
+        .context("failed to execute peak-values query")?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.context("failed to map peak-values row")?);
+    }
+    Ok(result)
+}
+
+fn db_get_setting(conn: &Connection, key: &str) -> anyhow::Result<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        [key],
+        |row| row.get(0),
+    )
+    .optional()
+    .with_context(|| format!("failed to get setting '{key}'"))
+}
+
+fn db_set_setting(conn: &Connection, key: &str, value: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key, value],
+    )
+    .with_context(|| format!("failed to set setting '{key}'"))?;
+    Ok(())
 }
 
 fn stored_run_to_summary(run: StoredRun) -> RunSummary {
@@ -2031,10 +2381,13 @@ mod tests {
         assert_eq!(run.calibration_profile_name.as_deref(), Some("Default bootstrap profile"));
 
         let frames = storage.fetch_frames(run.run_id).await.expect("fetch frames");
-        assert_eq!(frames.len(), 3);
-        assert_eq!(frames[0].run_state, RunState::Recording);
+        // The Idle frame at ts_ms=900 is included as a pre-run context frame.
+        assert_eq!(frames.len(), 4);
+        assert_eq!(frames[0].ts_ms, 900);
+        assert_eq!(frames[0].run_state, RunState::Idle);
         assert_eq!(frames[1].run_state, RunState::Recording);
-        assert_eq!(frames[2].run_state, RunState::Stopping);
+        assert_eq!(frames[2].run_state, RunState::Recording);
+        assert_eq!(frames[3].run_state, RunState::Stopping);
 
         let conn = Connection::open(&db_path).expect("open db for run inspection");
         let ended_at_ms: Option<i64> = conn
@@ -2045,6 +2398,83 @@ mod tests {
             )
             .expect("query ended_at_ms");
         assert_eq!(ended_at_ms, Some(1300));
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn pre_run_frames_are_prepended_with_original_timestamps() {
+        let db_path = test_db_path("pre-run-prepend");
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+
+        // Three idle frames before the run begins.
+        storage.record_live_frame(frame(100, RunState::Idle, 500.0, None, None)).await.expect("pre 1");
+        storage.record_live_frame(frame(110, RunState::Idle, 600.0, None, None)).await.expect("pre 2");
+        storage.record_live_frame(frame(120, RunState::Armed, 1600.0, None, None)).await.expect("pre 3");
+
+        // Run start trigger.
+        storage.record_live_frame(frame(1000, RunState::Recording, 3000.0, Some(60.0), Some(120.0))).await.expect("rec 1");
+        storage.record_live_frame(frame(1100, RunState::Stopping, 2000.0, Some(30.0), Some(80.0))).await.expect("stopping");
+        storage.record_live_frame(frame(1200, RunState::Idle, 500.0, None, None)).await.expect("close");
+        storage.flush().await.expect("flush");
+
+        let runs = storage.list_recent_runs(10).await.expect("list runs");
+        assert_eq!(runs.len(), 1);
+
+        let frames = storage.fetch_frames(runs[0].run_id).await.expect("fetch frames");
+        // 3 pre-run frames + 1 Recording (included in drain) + 1 Stopping = 5.
+        assert_eq!(frames.len(), 5);
+        // Pre-run frames appear first in original timestamp order.
+        assert_eq!(frames[0].ts_ms, 100);
+        assert_eq!(frames[0].run_state, RunState::Idle);
+        assert_eq!(frames[1].ts_ms, 110);
+        assert_eq!(frames[1].run_state, RunState::Idle);
+        assert_eq!(frames[2].ts_ms, 120);
+        assert_eq!(frames[2].run_state, RunState::Armed);
+        assert_eq!(frames[3].ts_ms, 1000);
+        assert_eq!(frames[3].run_state, RunState::Recording);
+        assert_eq!(frames[4].ts_ms, 1100);
+        assert_eq!(frames[4].run_state, RunState::Stopping);
+        // Peak values are unaffected by pre-run frames that have no power/torque.
+        assert_eq!(runs[0].peak_power_hp, 60.0);
+        assert_eq!(runs[0].peak_torque_nm, 120.0);
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn pre_run_buffer_caps_at_300_and_oldest_are_dropped() {
+        let db_path = test_db_path("pre-run-cap");
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+
+        // Send 400 idle frames — buffer holds at most PRE_RUN_BUFFER_CAP (300).
+        for i in 0i64..400 {
+            storage.record_live_frame(frame(i * 10, RunState::Idle, 500.0, None, None))
+                .await.expect("idle frame");
+        }
+
+        // Recording frame is also pushed to the buffer before the drain, evicting
+        // one more entry; the drain therefore yields exactly PRE_RUN_BUFFER_CAP frames.
+        storage.record_live_frame(frame(10_000, RunState::Recording, 3000.0, Some(60.0), Some(120.0)))
+            .await.expect("recording frame");
+        storage.record_live_frame(frame(10_100, RunState::Idle, 500.0, None, None))
+            .await.expect("close");
+        storage.flush().await.expect("flush");
+
+        let runs = storage.list_recent_runs(10).await.expect("list runs");
+        assert_eq!(runs.len(), 1);
+
+        let frames = storage.fetch_frames(runs[0].run_id).await.expect("fetch frames");
+        assert_eq!(frames.len(), PRE_RUN_BUFFER_CAP);
+
+        // Last frame is the Recording trigger with its original timestamp preserved.
+        assert_eq!(frames.last().unwrap().ts_ms, 10_000);
+        assert_eq!(frames.last().unwrap().run_state, RunState::Recording);
+
+        // The oldest 100 of the 400 idle frames were evicted; ts_ms starts > 0.
+        assert!(frames[0].ts_ms > 0);
 
         drop(storage);
         let _ = fs::remove_file(db_path);

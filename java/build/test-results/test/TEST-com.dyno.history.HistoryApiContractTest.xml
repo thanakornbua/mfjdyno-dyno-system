@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.dyno.history.HistoryApiContractTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-05-07T04:26:46" hostname="someonelaptop" time="0.013">
+<testsuite name="com.dyno.history.HistoryApiContractTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-06-02T19:22:07" hostname="someonelaptop" time="0.016">
   <properties/>
-  <testcase name="compareShapeParses" classname="com.dyno.history.HistoryApiContractTest" time="0.01"/>
-  <testcase name="runListShapeParses" classname="com.dyno.history.HistoryApiContractTest" time="0.003"/>
+  <testcase name="compareShapeParses" classname="com.dyno.history.HistoryApiContractTest" time="0.011"/>
+  <testcase name="runListShapeParses" classname="com.dyno.history.HistoryApiContractTest" time="0.005"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
