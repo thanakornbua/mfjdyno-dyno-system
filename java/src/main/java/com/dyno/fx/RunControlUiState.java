@@ -2,6 +2,7 @@ package com.dyno.fx;
 
 import com.dyno.control.RunControlResponse;
 import com.dyno.presenter.OperatorViewModel;
+import com.dyno.presenter.ChartScaleSettings;
 import com.dyno.presenter.RunAxisSelection;
 import com.dyno.presenter.RunConfiguration;
 
@@ -54,6 +55,19 @@ final class RunControlUiState {
 
     String axisSummaryText() {
         return preferredRunConfiguration().getAxisSelection().summaryText();
+    }
+
+    void updateScaleSettings(ChartScaleSettings scaleSettings) {
+        RunConfiguration preferred = preferredRunConfiguration();
+        RunConfiguration next = new RunConfiguration(
+            preferred.getLicensePlate(),
+            preferred.getAxisSelection(),
+            scaleSettings
+        );
+        if (configuredRunConfiguration != null) {
+            configuredRunConfiguration = next;
+        }
+        draftRunConfiguration = next;
     }
 
     void setBusy(String message) {

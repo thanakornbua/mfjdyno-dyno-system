@@ -34,6 +34,7 @@ public final class HeaderBarView extends VBox {
     private final Button stopButton;
     private final Button printButton;
     private final Button compareButton;
+    private final Button scaleButton;
     private final Button calibrationButton;
     private final Button auditLogButton;
     private final Button languageButton;
@@ -47,6 +48,7 @@ public final class HeaderBarView extends VBox {
         Runnable onStopRequested,
         Runnable onPrintRequested,
         Runnable onCompareRequested,
+        Runnable onScaleRequested,
         Runnable onCalibrationRequested,
         Runnable onAuditLogRequested,
         Runnable onLanguageToggleRequested
@@ -101,6 +103,7 @@ public final class HeaderBarView extends VBox {
         stopButton = buildToolbarButton(UiText.text("STOP"), onStopRequested);
         printButton = buildToolbarButton(UiText.text("PRINT"), onPrintRequested);
         compareButton = buildToolbarButton(UiText.text("COMPARE"), onCompareRequested);
+        scaleButton = buildToolbarButton(UiText.text("SCALE"), onScaleRequested);
         calibrationButton = buildToolbarButton(UiText.text("CALIBRATION"), onCalibrationRequested);
         auditLogButton = buildToolbarButton(UiText.text("AUDIT LOG"), onAuditLogRequested);
         languageButton = buildToolbarButton(UiText.languageButtonLabel(), onLanguageToggleRequested);
@@ -122,6 +125,7 @@ public final class HeaderBarView extends VBox {
             stopButton,
             printButton,
             compareButton,
+            scaleButton,
             calibrationButton,
             auditLogButton,
             languageButton,
@@ -171,6 +175,7 @@ public final class HeaderBarView extends VBox {
         stopButton.setText(UiText.text("STOP"));
         printButton.setText(UiText.text("PRINT"));
         compareButton.setText(UiText.text("COMPARE"));
+        scaleButton.setText(UiText.text("SCALE"));
         calibrationButton.setText(UiText.text("CALIBRATION"));
         auditLogButton.setText(UiText.text("AUDIT LOG"));
         languageButton.setText(UiText.languageButtonLabel());
@@ -196,6 +201,7 @@ public final class HeaderBarView extends VBox {
         stopButton.setDisable(!stopEnabled);
         printButton.setDisable(!printEnabled);
         compareButton.setDisable(!compareEnabled);
+        scaleButton.setDisable(!compareEnabled);
         calibrationButton.setDisable(!calibrationEnabled);
         auditLogButton.setDisable(false);
     }
@@ -258,6 +264,7 @@ public final class HeaderBarView extends VBox {
         stopButton.setFont(font);
         printButton.setFont(font);
         compareButton.setFont(font);
+        scaleButton.setFont(font);
         calibrationButton.setFont(font);
         auditLogButton.setFont(font);
         languageButton.setFont(font);

@@ -19,6 +19,7 @@ import com.dyno.history.RunHistoryDetailDto;
 import com.dyno.history.RunHistoryFrameDto;
 import com.dyno.history.RunHistoryFrameSeriesDto;
 import com.dyno.history.RunHistorySummaryDto;
+import com.dyno.presenter.ChartScaleSettings;
 import com.dyno.presenter.CompareDisplayMapper;
 import com.dyno.presenter.CompareDisplayState;
 import com.dyno.presenter.LiveDynoChartModel;
@@ -78,6 +79,7 @@ public final class OperatorConsoleStage {
     private OperatorStatusModel latestOperatorStatus = OperatorStatusMapper.initial();
     private CompareDisplayState compareDisplayState;
     private CompareRunsResponseDto lastCompareResponse;
+    private ChartScaleSettings chartScaleSettings = ChartScaleSettings.defaults();
     private LiveRunShellView root;
 
     public void show(Stage stage) {
@@ -87,6 +89,7 @@ public final class OperatorConsoleStage {
         webSocketClient = new DynoWebSocketClient(telemetryState);
         TelemetryPresenter telemetryPresenter = new TelemetryPresenter(telemetryState);
         chartPresenter = new LiveDynoChartPresenter(telemetryState);
+        chartPresenter.setScaleSettings(chartScaleSettings);
 
         root = new LiveRunShellView(new LiveRunShellView.ControlActions() {
             @Override
@@ -117,6 +120,11 @@ public final class OperatorConsoleStage {
             @Override
             public void onCompareRequested() {
                 handleCompareRequested();
+            }
+
+            @Override
+            public void onScaleRequested() {
+                handleScaleRequested();
             }
 
             @Override
@@ -235,6 +243,9 @@ public final class OperatorConsoleStage {
             return;
         }
         final RunConfiguration runConfiguration = configuration.get();
+        chartScaleSettings = runConfiguration.getScaleSettings();
+        runControlState.updateScaleSettings(chartScaleSettings);
+        chartPresenter.setScaleSettings(chartScaleSettings);
         submitControlRequest("Starting run...", new ControlRequest() {
             @Override
             public RunControlResponse call() throws Exception {
@@ -359,6 +370,24 @@ public final class OperatorConsoleStage {
             }));
     }
 
+    private void handleScaleRequested() {
+        Optional<ChartScaleSettings> selected = RunConfigureDialog.showScaleSettings(stage, chartScaleSettings);
+        if (!selected.isPresent()) {
+            return;
+        }
+        chartScaleSettings = selected.get();
+        runControlState.updateScaleSettings(chartScaleSettings);
+        chartPresenter.setScaleSettings(chartScaleSettings);
+        if (lastCompareResponse != null) {
+            compareDisplayState = CompareDisplayMapper.map(lastCompareResponse, chartScaleSettings);
+        }
+        runControlState.showOperatorMessage(
+            "Chart scale updated: " + chartScaleSettings.summaryText(),
+            OperatorViewModel.Tone.NORMAL
+        );
+        renderRoot();
+    }
+
     private void handleCalibrationRequested() {
         if (!PasswordGateDialog.show(stage)) return;
         runControlState.setBusy(UiText.text("Loading calibration profiles..."));
@@ -467,7 +496,7 @@ public final class OperatorConsoleStage {
                 }
 
                 lastCompareResponse = result.response;
-                compareDisplayState = CompareDisplayMapper.map(result.response);
+                compareDisplayState = CompareDisplayMapper.map(result.response, chartScaleSettings);
                 CompareDataView.show(stage, result.response);
                 runControlState.showOperatorMessage(
                     "Loaded comparison for " + runIds.size() + " stored run" + (runIds.size() == 1 ? "" : "s") + ".",
@@ -539,6 +568,7 @@ public final class OperatorConsoleStage {
     private void handleExportRequested() {
         final CompareRunsResponseDto capturedCompare = lastCompareResponse;
         final LiveDynoChartModel capturedChart = latestChartModel;
+        final ChartScaleSettings capturedScale = chartScaleSettings;
 
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         String initialFileName;
@@ -573,11 +603,11 @@ public final class OperatorConsoleStage {
         CompletableFuture
             .supplyAsync(() -> {
                 if (capturedCompare != null) {
-                    return printCompareExport(capturedCompare, outputPath);
+                    return printCompareExport(capturedCompare, outputPath, capturedScale);
                 } else if (capturedChart != null && capturedChart.hasPlottedData()) {
-                    return printLiveSnapshot(capturedChart, outputPath);
+                    return printLiveSnapshot(capturedChart, outputPath, capturedScale);
                 } else {
-                    return printLatestCompletedRun(outputPath);
+                    return printLatestCompletedRun(outputPath, capturedScale);
                 }
             }, controlExecutor)
             .thenAccept(result -> Platform.runLater(() -> {
@@ -594,22 +624,23 @@ public final class OperatorConsoleStage {
             }));
     }
 
-    private PrintResult printCompareExport(CompareRunsResponseDto compareResponse, Path outputFile) {
+    private PrintResult printCompareExport(CompareRunsResponseDto compareResponse, Path outputFile, ChartScaleSettings scaleSettings) {
         try {
-            DynoPdfExporter.writeCompare(compareResponse, outputFile);
+            DynoPdfExporter.writeCompare(compareResponse, outputFile, scaleSettings);
             return PrintResult.success(outputFile);
         } catch (Exception error) {
             return PrintResult.failure("Compare export failed: " + rootMessage(error));
         }
     }
 
-    private PrintResult printLiveSnapshot(LiveDynoChartModel chartModel, Path outputFile) {
+    private PrintResult printLiveSnapshot(LiveDynoChartModel chartModel, Path outputFile, ChartScaleSettings scaleSettings) {
         try {
             DynoPdfExporter.writeLiveSnapshot(
                 chartModel.getRunLabel(),
                 chartModel.getChartCaption(),
                 chartModel.getSeries(),
-                outputFile
+                outputFile,
+                scaleSettings
             );
             return PrintResult.success(outputFile);
         } catch (Exception error) {
@@ -617,7 +648,7 @@ public final class OperatorConsoleStage {
         }
     }
 
-    private PrintResult printLatestCompletedRun(Path outputFile) {
+    private PrintResult printLatestCompletedRun(Path outputFile, ChartScaleSettings scaleSettings) {
         try {
             List<RunHistorySummaryDto> runs = historyApiClient.listRuns();
             List<RunHistorySummaryDto> completed = completedRuns(runs);
@@ -636,7 +667,7 @@ public final class OperatorConsoleStage {
             List<RunHistoryFrameDto> frames = series != null && series.getFrames() != null
                 ? series.getFrames() : Collections.emptyList();
 
-            DynoPdfExporter.writeSingleRun(detail, frames, outputFile);
+            DynoPdfExporter.writeSingleRun(detail, frames, outputFile, scaleSettings);
             return PrintResult.success(outputFile);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();

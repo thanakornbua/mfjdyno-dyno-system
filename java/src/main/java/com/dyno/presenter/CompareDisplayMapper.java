@@ -29,9 +29,14 @@ public final class CompareDisplayMapper {
     }
 
     public static CompareDisplayState map(CompareRunsResponseDto response) {
+        return map(response, ChartScaleSettings.defaults());
+    }
+
+    public static CompareDisplayState map(CompareRunsResponseDto response, ChartScaleSettings scaleSettings) {
         List<ComparedRunDto> comparedRuns = response == null || response.getRuns() == null
             ? Collections.<ComparedRunDto>emptyList()
             : response.getRuns();
+        ChartScaleSettings safeScale = scaleSettings == null ? ChartScaleSettings.defaults() : scaleSettings;
 
         List<ChartSeriesModel> series = new ArrayList<ChartSeriesModel>();
         ArrayList<String> summaryLines = new ArrayList<String>();
@@ -85,19 +90,23 @@ public final class CompareDisplayMapper {
             }
 
             RunHistoryFrameDto peakFrame = peakPowerFrame(comparedRun);
+            RunHistoryFrameDto fastestFrame = RunMetrics.fastestFrame(comparedRun);
+            Double timeToFastest = RunMetrics.timeToFrameSeconds(frames, fastestFrame);
             summaryLines.add(
                 runLabel
                     + "  "
-                    + safeValue(run.getPeakPowerHp(), "HP")
+                    + safeValue(peakFrame == null ? null : peakFrame.getPowerHp(), "HP")
                     + " @ "
-                    + safeValue(run.getPeakPowerRpm(), "RPM")
+                    + safeValue(peakFrame == null ? null : peakFrame.getEngineRpm(), "RPM")
                     + "  |  "
                     + safeValue(run.getPeakTorqueNm(), "Nm")
                     + " @ "
                     + safeValue(run.getPeakTorqueRpm(), "RPM")
                     + "  |  "
-                    + "Speed "
-                    + safeValue(frameValue(peakFrame, Metric.SPEED), "km/h")
+                    + "Max speed "
+                    + safeValue(frameValue(fastestFrame, Metric.SPEED), "km/h")
+                    + " in "
+                    + safeValue(timeToFastest, "sec")
                     + "  |  "
                     + "AFR "
                     + safeValue(frameValue(peakFrame, Metric.AFR), "")
@@ -130,7 +139,10 @@ public final class CompareDisplayMapper {
             "Power / Torque",
             series,
             statusText,
-            false
+            false,
+            0,
+            Collections.<ChartSeriesModel>emptyList(),
+            safeScale
         );
 
         return new CompareDisplayState(
@@ -141,28 +153,7 @@ public final class CompareDisplayMapper {
     }
 
     public static RunHistoryFrameDto peakPowerFrame(ComparedRunDto comparedRun) {
-        if (comparedRun == null || comparedRun.getFrames() == null || comparedRun.getFrames().isEmpty()) {
-            return null;
-        }
-
-        Double peakPower = comparedRun.getRun() != null ? comparedRun.getRun().getPeakPowerHp() : null;
-        RunHistoryFrameDto best = null;
-        double bestPower = Double.NEGATIVE_INFINITY;
-        for (int index = 0; index < comparedRun.getFrames().size(); index++) {
-            RunHistoryFrameDto frame = comparedRun.getFrames().get(index);
-            if (frame.getPowerHp() == null) {
-                continue;
-            }
-            double value = frame.getPowerHp().doubleValue();
-            if (peakPower != null && Math.abs(value - peakPower.doubleValue()) < 0.001d) {
-                return frame;
-            }
-            if (value > bestPower) {
-                bestPower = value;
-                best = frame;
-            }
-        }
-        return best;
+        return RunMetrics.peakPowerFrame(comparedRun);
     }
 
     private static final java.time.format.DateTimeFormatter DATE_DISPLAY =

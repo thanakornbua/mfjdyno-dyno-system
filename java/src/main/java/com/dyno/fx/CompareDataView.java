@@ -5,6 +5,7 @@ import com.dyno.history.ComparedRunDto;
 import com.dyno.history.RunHistoryFrameDto;
 import com.dyno.history.RunHistoryDetailDto;
 import com.dyno.presenter.CompareDisplayMapper;
+import com.dyno.presenter.RunMetrics;
 import javafx.geometry.Insets;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.Dialog;
@@ -69,9 +70,10 @@ public final class CompareDataView extends Dialog<Void> {
         addMetricRow(grid, 2, UiText.text("Peak Power RPM"), runs, Metric.PEAK_POWER_RPM);
         addMetricRow(grid, 3, UiText.text("Peak Torque"), runs, Metric.PEAK_TORQUE);
         addMetricRow(grid, 4, UiText.text("Peak Torque RPM"), runs, Metric.PEAK_TORQUE_RPM);
-        addMetricRow(grid, 5, UiText.text("Peak Speed"), runs, Metric.PEAK_SPEED);
-        addMetricRow(grid, 6, UiText.text("AFR At Peak"), runs, Metric.AFR_AT_PEAK);
-        addMetricRow(grid, 7, UiText.text("Ambient"), runs, Metric.AMBIENT);
+        addMetricRow(grid, 5, UiText.text("Maximum speed [km/h]"), runs, Metric.MAX_SPEED);
+        addMetricRow(grid, 6, UiText.text("Time till fastest [sec]"), runs, Metric.TIME_TO_FASTEST);
+        addMetricRow(grid, 7, UiText.text("AFR At Peak"), runs, Metric.AFR_AT_PEAK);
+        addMetricRow(grid, 8, UiText.text("Ambient"), runs, Metric.AMBIENT);
 
         box.getChildren().addAll(title, note, grid);
 
@@ -92,19 +94,25 @@ public final class CompareDataView extends Dialog<Void> {
     private String metricValue(ComparedRunDto comparedRun, Metric metric) {
         RunHistoryDetailDto run = comparedRun.getRun();
         RunHistoryFrameDto peakFrame = CompareDisplayMapper.peakPowerFrame(comparedRun);
+        RunHistoryFrameDto fastestFrame = RunMetrics.fastestFrame(comparedRun);
         switch (metric) {
             case PEAK_POWER:
-                return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakPowerHp(), "HP");
+                return CompareDisplayMapper.safeValue(peakFrame == null ? null : peakFrame.getPowerHp(), "HP");
             case PEAK_POWER_RPM:
-                return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakPowerRpm(), "RPM");
+                return CompareDisplayMapper.safeValue(peakFrame == null ? null : peakFrame.getEngineRpm(), "RPM");
             case PEAK_TORQUE:
                 return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakTorqueNm(), "Nm");
             case PEAK_TORQUE_RPM:
                 return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakTorqueRpm(), "RPM");
-            case PEAK_SPEED:
+            case MAX_SPEED:
                 return CompareDisplayMapper.safeValue(
-                    CompareDisplayMapper.frameValue(peakFrame, CompareDisplayMapper.Metric.SPEED),
+                    CompareDisplayMapper.frameValue(fastestFrame, CompareDisplayMapper.Metric.SPEED),
                     "km/h"
+                );
+            case TIME_TO_FASTEST:
+                return CompareDisplayMapper.safeValue(
+                    RunMetrics.timeToFrameSeconds(comparedRun.getFrames(), fastestFrame),
+                    "sec"
                 );
             case AFR_AT_PEAK:
                 return CompareDisplayMapper.safeValue(
@@ -138,7 +146,8 @@ public final class CompareDataView extends Dialog<Void> {
         PEAK_POWER_RPM,
         PEAK_TORQUE,
         PEAK_TORQUE_RPM,
-        PEAK_SPEED,
+        MAX_SPEED,
+        TIME_TO_FASTEST,
         AFR_AT_PEAK,
         AMBIENT
     }

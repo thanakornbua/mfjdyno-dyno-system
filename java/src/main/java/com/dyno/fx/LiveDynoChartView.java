@@ -1,6 +1,7 @@
 package com.dyno.fx;
 
 import com.dyno.presenter.ChartPlotPoint;
+import com.dyno.presenter.ChartScaleSettings;
 import com.dyno.presenter.ChartSeriesModel;
 import com.dyno.presenter.LiveDynoChartModel;
 import javafx.animation.Animation;
@@ -47,6 +48,8 @@ public final class LiveDynoChartView extends StackPane {
     private long datasetToken = Long.MIN_VALUE;
     private double maxRpm = DEFAULT_RPM_MAX;
     private double maxValue = DEFAULT_VALUE_MAX;
+    private ChartScaleSettings scaleSettings = ChartScaleSettings.defaults();
+    private String currentYAxisLabel = "Selected Metrics";
 
     public LiveDynoChartView() {
         xAxis.setLabel("Engine RPM");
@@ -103,6 +106,8 @@ public final class LiveDynoChartView extends StackPane {
         }
 
         currentXAxisLabel = model.getXAxisLabel();
+        currentYAxisLabel = model.getYAxisLabel();
+        scaleSettings = model.getScaleSettings();
         xAxis.setLabel(model.getXAxisLabel());
         valueAxis.setLabel(model.getYAxisLabel());
 
@@ -227,19 +232,14 @@ public final class LiveDynoChartView extends StackPane {
     }
 
     private void updateAxes() {
-        double defaultXStep = defaultXStepForLabel(currentXAxisLabel);
-        double defaultXMax = defaultXMaxForLabel(currentXAxisLabel);
-        double roundedRpmMax = roundUp(maxRpm, defaultXStep, defaultXMax);
-        double roundedValueMax = roundUp(maxValue, 25.0d, DEFAULT_VALUE_MAX);
+        ChartScaleSettings settings = scaleSettings == null ? ChartScaleSettings.defaults() : scaleSettings;
+        String yScaleLabel = yScaleLabel();
+        double roundedRpmMax = settings.xMaxForLabel(currentXAxisLabel, maxRpm);
+        double roundedValueMax = settings.yMaxForLabel(yScaleLabel, maxValue);
         xAxis.setUpperBound(roundedRpmMax);
-        xAxis.setTickUnit(Math.max(defaultXStep, roundedRpmMax / 8.0d));
+        xAxis.setTickUnit(settings.xIntervalForLabel(currentXAxisLabel));
         valueAxis.setUpperBound(roundedValueMax);
-        valueAxis.setTickUnit(Math.max(25.0d, roundedValueMax / 8.0d));
-    }
-
-    private double roundUp(double value, double step, double minimum) {
-        double rounded = Math.ceil(Math.max(value, minimum) / step) * step;
-        return Math.max(rounded, minimum);
+        valueAxis.setTickUnit(settings.yIntervalForLabel(yScaleLabel));
     }
 
     private void applySeriesStyle() {
@@ -286,23 +286,27 @@ public final class LiveDynoChartView extends StackPane {
         return builder.toString();
     }
 
-    private double defaultXStepForLabel(String label) {
-        if (label != null && label.startsWith("Time")) {
-            return 1.0d;
+    private String yScaleLabel() {
+        if (currentYAxisLabel != null && !"Selected Metrics".equals(currentYAxisLabel)) {
+            return currentYAxisLabel;
         }
-        if (label != null && label.startsWith("Speed")) {
-            return 10.0d;
+        String detected = null;
+        for (ChartSeriesModel model : seriesModelById.values()) {
+            detected = commonMetric(detected, model.getLabel());
         }
-        return 500.0d;
+        for (ChartSeriesModel model : overlaySeriesModelById.values()) {
+            detected = commonMetric(detected, model.getLabel());
+        }
+        return detected == null ? currentYAxisLabel : detected;
     }
 
-    private double defaultXMaxForLabel(String label) {
-        if (label != null && label.startsWith("Time")) {
-            return 10.0d;
-        }
-        if (label != null && label.startsWith("Speed")) {
-            return 200.0d;
-        }
-        return DEFAULT_RPM_MAX;
+    private String commonMetric(String current, String nextLabel) {
+        String next = null;
+        if (nextLabel != null && nextLabel.contains("AFR")) next = "AFR";
+        else if (nextLabel != null && nextLabel.contains("Speed")) next = "Speed";
+        else if (nextLabel != null && nextLabel.contains("RPM")) next = "RPM";
+        if (next == null) return current;
+        if (current == null) return next;
+        return current.equals(next) ? current : "Selected Metrics";
     }
 }

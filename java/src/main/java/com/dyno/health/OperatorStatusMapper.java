@@ -50,10 +50,14 @@ public final class OperatorStatusMapper {
         StartupCheckDto storageCheck = findCheck(checks, "database_path");
         StartupCheckDto serialCheck = findCheck(checks, "serial_port");
         StartupCheckDto ambientCheck = findCheck(checks, "bme280_i2c");
+        StartupCheckDto stmCheck = findCheck(checks, "stm_device");
+        StartupCheckDto uartBridgeCheck = findCheck(checks, "uart_bridge");
 
         boolean storageReady = isOk(storageCheck);
         boolean serialDegraded = isNonOk(serialCheck);
         boolean ambientDegraded = isNonOk(ambientCheck);
+        boolean stmDegraded = isNonOk(stmCheck);
+        boolean uartBridgeDegraded = isNonOk(uartBridgeCheck);
         String sourceMode = normalize(health.getSourceMode(), "unknown");
         boolean replayMode = "replay".equals(sourceMode);
         int nonOkChecks = countNonOkChecks(checks);
@@ -68,6 +72,12 @@ public final class OperatorStatusMapper {
         if (ambientDegraded) {
             warnings.add("Ambient sensor unavailable — fallback values in use");
         }
+        if (stmDegraded) {
+            warnings.add("STM check unavailable");
+        }
+        if (uartBridgeDegraded) {
+            warnings.add("UART bridge unavailable — retrying");
+        }
 
         OperatorStatusModel.OverallState overallState = "ok".equals(normalize(health.getStatus(), "unknown"))
             ? OperatorStatusModel.OverallState.READY
@@ -80,6 +90,10 @@ public final class OperatorStatusMapper {
             primaryMessage = "Serial input unavailable — retrying";
         } else if (ambientDegraded) {
             primaryMessage = "Ambient sensor unavailable — fallback values in use";
+        } else if (stmDegraded) {
+            primaryMessage = "STM check unavailable";
+        } else if (uartBridgeDegraded) {
+            primaryMessage = "UART bridge unavailable — retrying";
         } else if (replayMode) {
             primaryMessage = "Replay mode active";
         } else if (overallState == OperatorStatusModel.OverallState.READY) {

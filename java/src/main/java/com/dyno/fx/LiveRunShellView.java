@@ -30,6 +30,8 @@ public final class LiveRunShellView extends BorderPane {
 
         void onCompareRequested();
 
+        void onScaleRequested();
+
         void onCalibrationRequested();
 
         void onAuditLogRequested();
@@ -146,6 +148,10 @@ public final class LiveRunShellView extends BorderPane {
             }
 
             @Override
+            public void onScaleRequested() {
+            }
+
+            @Override
             public void onCalibrationRequested() {
             }
 
@@ -195,6 +201,12 @@ public final class LiveRunShellView extends BorderPane {
                 @Override
                 public void run() {
                     controlActions.onCompareRequested();
+                }
+            },
+            new Runnable() {
+                @Override
+                public void run() {
+                    controlActions.onScaleRequested();
                 }
             },
             new Runnable() {

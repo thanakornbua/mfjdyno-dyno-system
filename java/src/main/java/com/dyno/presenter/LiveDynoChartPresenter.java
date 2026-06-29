@@ -30,6 +30,7 @@ public final class LiveDynoChartPresenter {
     private long datasetToken;
     private RunAxisSelection currentAxisSelection = RunAxisSelection.defaults();
     private RunAxisSelection datasetAxisSelection = RunAxisSelection.defaults();
+    private ChartScaleSettings scaleSettings = ChartScaleSettings.defaults();
     private boolean collectionOpen;
     private boolean recordingSeen;
     private boolean disconnectedDuringRun;
@@ -129,6 +130,11 @@ public final class LiveDynoChartPresenter {
         publish(buildViewModel());
     }
 
+    public synchronized void setScaleSettings(ChartScaleSettings settings) {
+        scaleSettings = settings == null ? ChartScaleSettings.defaults() : settings;
+        publish(buildViewModel());
+    }
+
     private void beginNewRun() {
         datasetToken += 1L;
         datasetRunLabel = runLabel;
@@ -195,7 +201,8 @@ public final class LiveDynoChartPresenter {
             statusText(),
             collectionOpen && isRecording(latestSnapshot.getFrame()) && latestSnapshot.getConnectionPhase() == ConnectionPhase.CONNECTED,
             overlayRuns.size(),
-            overlaySeries
+            overlaySeries,
+            scaleSettings
         );
     }
 

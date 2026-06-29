@@ -5,8 +5,10 @@ import com.dyno.history.ComparedRunDto;
 import com.dyno.history.RunHistoryDetailDto;
 import com.dyno.history.RunHistoryFrameDto;
 import com.dyno.presenter.ChartPlotPoint;
+import com.dyno.presenter.ChartScaleSettings;
 import com.dyno.presenter.ChartSeriesModel;
 import com.dyno.presenter.CompareDisplayMapper;
+import com.dyno.presenter.RunMetrics;
 import com.itextpdf.kernel.colors.DeviceRgb;
 import com.itextpdf.kernel.font.PdfFont;
 import com.itextpdf.kernel.geom.PageSize;
@@ -77,7 +79,8 @@ public final class DynoPdfExporter {
     private static final String LBL_CMP_PWR_RPM  = "Peak Power RPM";
     private static final String LBL_CMP_TORQUE   = "Peak Torque / แรงบิดสูงสุด (Nm)";
     private static final String LBL_CMP_TQ_RPM   = "Peak Torque RPM";
-    private static final String LBL_CMP_SPEED    = "Peak Speed / ความเร็วสูงสุด (km/h)";
+    private static final String LBL_CMP_SPEED    = "Maximum speed / ความเร็วสูงสุด (km/h)";
+    private static final String LBL_CMP_FASTEST_TIME = "Time till fastest / เวลาไปถึงความเร็วสูงสุด (sec)";
     private static final String LBL_CMP_AFR      = "AFR at Peak / อัตราส่วนผสม";
     private static final String LBL_CMP_AMBIENT  = "Ambient at Peak / สภาพแวดล้อม";
 
@@ -130,6 +133,15 @@ public final class DynoPdfExporter {
         List<RunHistoryFrameDto> frames,
         Path outputFile
     ) throws IOException {
+        writeSingleRun(detail, frames, outputFile, ChartScaleSettings.defaults());
+    }
+
+    public static void writeSingleRun(
+        RunHistoryDetailDto detail,
+        List<RunHistoryFrameDto> frames,
+        Path outputFile,
+        ChartScaleSettings scaleSettings
+    ) throws IOException {
         PdfFont font = FontProvider.loadSarabunFont();
         PdfWriter writer = new PdfWriter(outputFile.toFile());
         PdfDocument pdfDoc = new PdfDocument(writer);
@@ -142,11 +154,11 @@ public final class DynoPdfExporter {
         doc.add(sectionTitle(LBL_RUN_SUMMARY, font));
         doc.add(buildMetadataTable(detail, font));
         doc.add(vSpacer(6));
-        doc.add(buildPeakTable(detail, font));
+        doc.add(buildPeakTable(detail, frames, font));
         doc.add(vSpacer(6));
 
         // Ambient conditions from peak-power frame
-        RunHistoryFrameDto peakFrame = findPeakFrame(frames, detail.getPeakPowerHp());
+        RunHistoryFrameDto peakFrame = RunMetrics.peakPowerFrame(frames);
         if (peakFrame != null) {
             doc.add(buildAmbientTable(peakFrame, font));
             doc.add(vSpacer(6));
@@ -155,7 +167,7 @@ public final class DynoPdfExporter {
         // Chart
         List<ChartSeriesModel> series = makeSingleRunSeries(detail.getRunId(), frames, 0);
         doc.add(sectionTitle(LBL_CHART, font));
-        doc.add(makeChartImage(pdfDoc, series, contentWidth(), 255f, font));
+        doc.add(makeChartImage(pdfDoc, series, contentWidth(), 255f, font, scaleSettings));
         doc.add(vSpacer(12));
 
         // Footer
@@ -177,6 +189,16 @@ public final class DynoPdfExporter {
         List<ChartSeriesModel> series,
         Path outputFile
     ) throws IOException {
+        writeLiveSnapshot(runLabel, caption, series, outputFile, ChartScaleSettings.defaults());
+    }
+
+    public static void writeLiveSnapshot(
+        String runLabel,
+        String caption,
+        List<ChartSeriesModel> series,
+        Path outputFile,
+        ChartScaleSettings scaleSettings
+    ) throws IOException {
         PdfFont font = FontProvider.loadSarabunFont();
         PdfWriter writer = new PdfWriter(outputFile.toFile());
         PdfDocument pdfDoc = new PdfDocument(writer);
@@ -191,7 +213,7 @@ public final class DynoPdfExporter {
 
         doc.add(sectionTitle(LBL_CHART, font));
         List<ChartSeriesModel> safeSeries = series != null ? series : Collections.<ChartSeriesModel>emptyList();
-        doc.add(makeChartImage(pdfDoc, safeSeries, contentWidth(), 255f, font));
+        doc.add(makeChartImage(pdfDoc, safeSeries, contentWidth(), 255f, font, scaleSettings));
         doc.add(vSpacer(12));
 
         addFooter(doc, font);
@@ -207,6 +229,14 @@ public final class DynoPdfExporter {
     public static void writeCompare(
         CompareRunsResponseDto response,
         Path outputFile
+    ) throws IOException {
+        writeCompare(response, outputFile, ChartScaleSettings.defaults());
+    }
+
+    public static void writeCompare(
+        CompareRunsResponseDto response,
+        Path outputFile,
+        ChartScaleSettings scaleSettings
     ) throws IOException {
         List<ComparedRunDto> runs = runsFrom(response);
 
@@ -227,7 +257,7 @@ public final class DynoPdfExporter {
         // Chart with all run series overlaid
         List<ChartSeriesModel> allSeries = makeCompareSeries(runs);
         doc.add(sectionTitle(LBL_CHART, font));
-        doc.add(makeChartImage(pdfDoc, allSeries, contentWidth(), 255f, font));
+        doc.add(makeChartImage(pdfDoc, allSeries, contentWidth(), 255f, font, scaleSettings));
         doc.add(vSpacer(12));
 
         // Per-run metadata blocks
@@ -239,7 +269,7 @@ public final class DynoPdfExporter {
             doc.add(sectionTitle(runLabel(cr.getRun()), font));
             doc.add(buildMetadataTable(cr.getRun(), font));
             doc.add(vSpacer(4));
-            doc.add(buildPeakTable(cr.getRun(), font));
+            doc.add(buildPeakTable(cr.getRun(), cr.getFrames(), font));
             doc.add(vSpacer(8));
         }
 
@@ -336,9 +366,16 @@ public final class DynoPdfExporter {
     }
 
     private static Table buildPeakTable(RunHistoryDetailDto d, PdfFont font) {
+        return buildPeakTable(d, Collections.<RunHistoryFrameDto>emptyList(), font);
+    }
+
+    private static Table buildPeakTable(RunHistoryDetailDto d, List<RunHistoryFrameDto> frames, PdfFont font) {
         Table t = twoCol();
+        RunHistoryFrameDto peakPowerFrame = RunMetrics.peakPowerFrame(frames);
+        Double peakPowerHp = peakPowerFrame == null ? d.getPeakPowerHp() : peakPowerFrame.getPowerHp();
+        Double peakPowerRpm = peakPowerFrame == null ? d.getPeakPowerRpm() : peakPowerFrame.getEngineRpm();
         row(t, LBL_PEAK_POWER,
-            fmtN(d.getPeakPowerHp(), "HP") + "  @  " + fmtN(d.getPeakPowerRpm(), "RPM"), font);
+            fmtN(peakPowerHp, "HP") + "  @  " + fmtN(peakPowerRpm, "RPM"), font);
         row(t, LBL_PEAK_TORQUE,
             fmtN(d.getPeakTorqueNm(), "Nm") + "  @  " + fmtN(d.getPeakTorqueRpm(), "RPM"), font);
         return t;
@@ -372,12 +409,14 @@ public final class DynoPdfExporter {
         // Data rows (lambda-free, compatible with Java 8 source / Java 21 target)
         cmpRow(t, LBL_CMP_POWER, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                return r.getRun() == null ? "—" : fmtN(r.getRun().getPeakPowerHp(), "HP");
+                RunHistoryFrameDto pk = CompareDisplayMapper.peakPowerFrame(r);
+                return fmtN(pk == null ? null : pk.getPowerHp(), "HP");
             }
         });
         cmpRow(t, LBL_CMP_PWR_RPM, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                return r.getRun() == null ? "—" : fmtN(r.getRun().getPeakPowerRpm(), "RPM");
+                RunHistoryFrameDto pk = CompareDisplayMapper.peakPowerFrame(r);
+                return fmtN(pk == null ? null : pk.getEngineRpm(), "RPM");
             }
         });
         cmpRow(t, LBL_CMP_TORQUE, runs, font, new CmpFn() {
@@ -392,8 +431,14 @@ public final class DynoPdfExporter {
         });
         cmpRow(t, LBL_CMP_SPEED, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                RunHistoryFrameDto pk = CompareDisplayMapper.peakPowerFrame(r);
-                return fmtN(CompareDisplayMapper.frameValue(pk, CompareDisplayMapper.Metric.SPEED), "km/h");
+                RunHistoryFrameDto fastest = RunMetrics.fastestFrame(r);
+                return fmtN(CompareDisplayMapper.frameValue(fastest, CompareDisplayMapper.Metric.SPEED), "km/h");
+            }
+        });
+        cmpRow(t, LBL_CMP_FASTEST_TIME, runs, font, new CmpFn() {
+            public String get(ComparedRunDto r) {
+                RunHistoryFrameDto fastest = RunMetrics.fastestFrame(r);
+                return fmtN(RunMetrics.timeToFrameSeconds(r.getFrames(), fastest), "sec");
             }
         });
         cmpRow(t, LBL_CMP_AFR, runs, font, new CmpFn() {
@@ -419,11 +464,12 @@ public final class DynoPdfExporter {
         List<ChartSeriesModel> series,
         float w,
         float h,
-        PdfFont font
+        PdfFont font,
+        ChartScaleSettings scaleSettings
     ) {
         PdfFormXObject xObj = new PdfFormXObject(new Rectangle(0, 0, w, h));
         PdfCanvas cv = new PdfCanvas(xObj, pdfDoc);
-        drawChart(cv, w, h, series, font);
+        drawChart(cv, w, h, series, font, scaleSettings);
         cv.release();
         Image img = new Image(xObj);
         img.setWidth(w);
@@ -436,7 +482,8 @@ public final class DynoPdfExporter {
         float totalW,
         float totalH,
         List<ChartSeriesModel> series,
-        PdfFont font
+        PdfFont font,
+        ChartScaleSettings scaleSettings
     ) {
         // Plot area (inside the margins allocated for axis labels)
         float px = CHART_ML;
@@ -455,8 +502,9 @@ public final class DynoPdfExporter {
                 hasData = true;
             }
         }
-        maxX = niceMax(maxX, 1000);
-        maxY = niceMax(maxY, 50);
+        ChartScaleSettings safeScale = scaleSettings == null ? ChartScaleSettings.defaults() : scaleSettings;
+        maxX = safeScale.xMaxForLabel("Engine RPM", maxX);
+        maxY = safeScale.yMaxForLabel("Selected Metrics", maxY);
 
         // Plot background
         cv.saveState();
@@ -469,8 +517,8 @@ public final class DynoPdfExporter {
         cv.saveState();
         cv.setStrokeColor(CHART_GRID);
         cv.setLineWidth(0.4f);
-        int xDiv = 8;
-        int yDiv = 6;
+        int xDiv = divisionCount(maxX, safeScale.xIntervalForLabel("Engine RPM"));
+        int yDiv = divisionCount(maxY, safeScale.yIntervalForLabel("Selected Metrics"));
         for (int i = 1; i < xDiv; i++) {
             float gx = px + pw * i / (float) xDiv;
             cv.moveTo(gx, py).lineTo(gx, py + ph).stroke();
@@ -707,8 +755,11 @@ public final class DynoPdfExporter {
         return LocalDateTime.now(ZoneId.systemDefault()).format(TS_FMT);
     }
 
-    private static double niceMax(double raw, double step) {
-        return Math.ceil(Math.max(raw, step) / step) * step;
+    private static int divisionCount(double max, double interval) {
+        if (!Double.isFinite(max) || !Double.isFinite(interval) || interval <= 0.0d) {
+            return 8;
+        }
+        return Math.max(1, Math.min(20, (int) Math.round(max / interval)));
     }
 
     private static float clamp(float v, float lo, float hi) {
@@ -731,25 +782,6 @@ public final class DynoPdfExporter {
         int g = Integer.parseInt(h.substring(2, 4), 16);
         int b = Integer.parseInt(h.substring(4, 6), 16);
         return new DeviceRgb(r / 255.0f, g / 255.0f, b / 255.0f);
-    }
-
-    private static RunHistoryFrameDto findPeakFrame(
-        List<RunHistoryFrameDto> frames,
-        Double peakPowerHp
-    ) {
-        if (frames == null || frames.isEmpty()) return null;
-        RunHistoryFrameDto best = null;
-        double bestP = Double.NEGATIVE_INFINITY;
-        for (int i = 0; i < frames.size(); i++) {
-            RunHistoryFrameDto f = frames.get(i);
-            if (f.getPowerHp() == null) continue;
-            double p = f.getPowerHp().doubleValue();
-            if (peakPowerHp != null && Math.abs(p - peakPowerHp.doubleValue()) < 0.001) {
-                return f;
-            }
-            if (p > bestP) { bestP = p; best = f; }
-        }
-        return best;
     }
 
     // =========================================================================

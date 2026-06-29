@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.dyno.history.HistoryApiContractTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-06-04T05:36:21" hostname="someonelaptop" time="0.018">
-  <properties/>
-  <testcase name="compareShapeParses" classname="com.dyno.history.HistoryApiContractTest" time="0.013"/>
-  <testcase name="runListShapeParses" classname="com.dyno.history.HistoryApiContractTest" time="0.004"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

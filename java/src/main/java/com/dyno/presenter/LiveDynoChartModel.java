@@ -17,6 +17,7 @@ public final class LiveDynoChartModel {
     private final boolean collecting;
     private final int overlayRunCount;
     private final List<ChartSeriesModel> overlaySeries;
+    private final ChartScaleSettings scaleSettings;
 
     public LiveDynoChartModel(
         long datasetToken,
@@ -32,7 +33,7 @@ public final class LiveDynoChartModel {
     ) {
         this(datasetToken, runLabel, chartCaption, axisSummaryText, summaryText,
             xAxisLabel, yAxisLabel, series, statusText, collecting, 0,
-            Collections.<ChartSeriesModel>emptyList());
+            Collections.<ChartSeriesModel>emptyList(), ChartScaleSettings.defaults());
     }
 
     public LiveDynoChartModel(
@@ -49,6 +50,26 @@ public final class LiveDynoChartModel {
         int overlayRunCount,
         List<ChartSeriesModel> overlaySeries
     ) {
+        this(datasetToken, runLabel, chartCaption, axisSummaryText, summaryText,
+            xAxisLabel, yAxisLabel, series, statusText, collecting, overlayRunCount,
+            overlaySeries, ChartScaleSettings.defaults());
+    }
+
+    public LiveDynoChartModel(
+        long datasetToken,
+        String runLabel,
+        String chartCaption,
+        String axisSummaryText,
+        String summaryText,
+        String xAxisLabel,
+        String yAxisLabel,
+        List<ChartSeriesModel> series,
+        String statusText,
+        boolean collecting,
+        int overlayRunCount,
+        List<ChartSeriesModel> overlaySeries,
+        ChartScaleSettings scaleSettings
+    ) {
         this.datasetToken = datasetToken;
         this.runLabel = runLabel;
         this.chartCaption = chartCaption;
@@ -61,6 +82,7 @@ public final class LiveDynoChartModel {
         this.collecting = collecting;
         this.overlayRunCount = overlayRunCount;
         this.overlaySeries = Collections.unmodifiableList(new ArrayList<ChartSeriesModel>(overlaySeries));
+        this.scaleSettings = scaleSettings == null ? ChartScaleSettings.defaults() : scaleSettings;
     }
 
     public long getDatasetToken() {
@@ -109,6 +131,10 @@ public final class LiveDynoChartModel {
 
     public List<ChartSeriesModel> getOverlaySeries() {
         return overlaySeries;
+    }
+
+    public ChartScaleSettings getScaleSettings() {
+        return scaleSettings;
     }
 
     public boolean hasPlottedData() {

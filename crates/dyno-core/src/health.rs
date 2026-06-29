@@ -4,6 +4,7 @@
 //! device paths the dyno service expects at boot and provide operator-readable
 //! status without probing deep runtime behavior.
 
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use tracing::{error, info, warn};
 use crate::config::{Config, SourceMode};
 
 const BME280_I2C_PATH: &str = "/dev/i2c-1";
+const DEFAULT_STM_DEVICE_PATH: &str = "/dev/ttySTM0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,6 +52,24 @@ pub fn collect_startup_health(config: &Config) -> StartupHealth {
 
     if config.source_mode == SourceMode::Live {
         checks.push(check_serial_path(&config.serial_port));
+        let stm_path = env::var("DYNO_STM_DEVICE_PATH")
+            .unwrap_or_else(|_| DEFAULT_STM_DEVICE_PATH.to_owned());
+        let uart_bridge_path = env::var("DYNO_UART_BRIDGE_PATH")
+            .unwrap_or_else(|_| config.serial_port.clone());
+        checks.push(check_named_device(
+            "stm_device",
+            "STM device",
+            Path::new(&stm_path),
+            false,
+            "STM telemetry checks will stay unavailable until it appears",
+        ));
+        checks.push(check_named_device(
+            "uart_bridge",
+            "UART bridge",
+            Path::new(&uart_bridge_path),
+            true,
+            "ESP32 UART bridge ingest will keep retrying until it appears",
+        ));
     }
 
     if config.bme280_enabled {
@@ -192,6 +212,30 @@ fn check_optional_i2c(i2c_path: &Path) -> StartupCheck {
             "optional I2C device {} is missing; ambient reads will fall back to stub values",
             i2c_path.display()
         ),
+    }
+}
+
+fn check_named_device(
+    name: &str,
+    label: &str,
+    path: &Path,
+    required: bool,
+    missing_detail: &str,
+) -> StartupCheck {
+    if path.exists() {
+        return StartupCheck {
+            name: name.to_owned(),
+            required,
+            status: HealthStatus::Ok,
+            summary: format!("{label} {} is present", path.display()),
+        };
+    }
+
+    StartupCheck {
+        name: name.to_owned(),
+        required,
+        status: HealthStatus::Degraded,
+        summary: format!("{label} {} is missing; {missing_detail}", path.display()),
     }
 }
 
