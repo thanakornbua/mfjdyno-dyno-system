@@ -6,17 +6,26 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 
+import java.io.InputStream;
+
 public final class HeaderBarView extends VBox {
-    private final HBox topRow;
+    private static final String LOGO_RESOURCE = "/com/dyno/assets/logo.jpg";
+
+    private final StackPane topRow;
     private final HBox toolbarRow;
+    private final HBox topRightRow;
+    private final ImageView logoView;
     private final Label title;
     private final Label subtitle;
     private final Label runLabel;
@@ -110,11 +119,14 @@ public final class HeaderBarView extends VBox {
 
         VBox titleBlock = new VBox(3, title, subtitle);
         VBox runBlock = new VBox(3, runLabel, plateLabel);
-        Region topSpacer = new Region();
-        HBox.setHgrow(topSpacer, Priority.ALWAYS);
+        topRightRow = new HBox(18, backendStatusBlock, runBlock);
+        topRightRow.setAlignment(Pos.CENTER_RIGHT);
 
-        topRow = new HBox(18, titleBlock, topSpacer, backendStatusBlock, runBlock);
-        topRow.setAlignment(Pos.CENTER_LEFT);
+        logoView = buildLogoView();
+        topRow = new StackPane(titleBlock, logoView, topRightRow);
+        StackPane.setAlignment(titleBlock, Pos.CENTER_LEFT);
+        StackPane.setAlignment(logoView, Pos.CENTER);
+        StackPane.setAlignment(topRightRow, Pos.CENTER_RIGHT);
 
         Region toolbarSpacer = new Region();
         HBox.setHgrow(toolbarSpacer, Priority.ALWAYS);
@@ -211,8 +223,10 @@ public final class HeaderBarView extends VBox {
             case COMPACT:
                 setSpacing(8);
                 setPadding(new Insets(8, 10, 8, 10));
-                topRow.setSpacing(10);
+                topRightRow.setSpacing(10);
                 toolbarRow.setSpacing(5);
+                logoView.setFitWidth(76);
+                logoView.setFitHeight(44);
                 title.setFont(Font.font("SansSerif", FontWeight.BOLD, 22));
                 subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
                 backendStatusTitle.setFont(Font.font("SansSerif", FontWeight.BOLD, 12));
@@ -226,8 +240,10 @@ public final class HeaderBarView extends VBox {
             case LARGE:
                 setSpacing(14);
                 setPadding(new Insets(14, 22, 14, 22));
-                topRow.setSpacing(20);
+                topRightRow.setSpacing(20);
                 toolbarRow.setSpacing(10);
+                logoView.setFitWidth(112);
+                logoView.setFitHeight(64);
                 title.setFont(Font.font("SansSerif", FontWeight.BOLD, 30));
                 subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 16));
                 backendStatusTitle.setFont(Font.font("SansSerif", FontWeight.BOLD, 14));
@@ -242,8 +258,10 @@ public final class HeaderBarView extends VBox {
             default:
                 setSpacing(12);
                 setPadding(new Insets(12, 18, 12, 18));
-                topRow.setSpacing(18);
+                topRightRow.setSpacing(18);
                 toolbarRow.setSpacing(8);
+                logoView.setFitWidth(96);
+                logoView.setFitHeight(56);
                 title.setFont(Font.font("SansSerif", FontWeight.BOLD, 26));
                 subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 15));
                 backendStatusTitle.setFont(Font.font("SansSerif", FontWeight.BOLD, 13));
@@ -268,6 +286,24 @@ public final class HeaderBarView extends VBox {
         calibrationButton.setFont(font);
         auditLogButton.setFont(font);
         languageButton.setFont(font);
+    }
+
+    private ImageView buildLogoView() {
+        ImageView view = new ImageView();
+        view.setPreserveRatio(true);
+        view.setSmooth(true);
+        view.setFitWidth(96);
+        view.setFitHeight(56);
+        try (InputStream in = HeaderBarView.class.getResourceAsStream(LOGO_RESOURCE)) {
+            if (in != null) {
+                view.setImage(new Image(in));
+            }
+        } catch (Exception ignored) {
+            // Header remains usable without a packaged logo.
+        }
+        view.setVisible(view.getImage() != null);
+        view.setManaged(view.getImage() != null);
+        return view;
     }
 
     private Button buildToolbarButton(String text, Runnable action) {
