@@ -102,7 +102,7 @@ public final class CompareDisplayMapperTest {
         CompareDisplayState display = CompareDisplayMapper.map(response);
 
         assertEquals("Comparing 2 stored runs", display.getSummaryPrimary());
-        assertTrue(display.getSummarySecondary().contains("RUN-00001"));
+        assertTrue(display.getSummarySecondary().contains("Run #1"));
         assertTrue(display.getSummarySecondary().contains("Ambient 24.5 C / 55.0 % / 1013."));
         assertEquals(4, display.getChartModel().getSeries().size());
         assertEquals("COMPARE MODE", display.getChartModel().getRunLabel());

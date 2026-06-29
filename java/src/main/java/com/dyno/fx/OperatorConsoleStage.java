@@ -31,6 +31,7 @@ import com.dyno.ws.DynoWebSocketClient;
 import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.input.KeyCode;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import java.nio.file.Files;
@@ -491,7 +492,7 @@ public final class OperatorConsoleStage {
         try {
             CalibrationResponseDto active = calibrationApiClient.getActiveCalibration();
             List<CalibrationProfileDto> profiles = calibrationApiClient.listCalibrationProfiles();
-            boolean locked = calibrationApiClient.isCalibrationLocked();
+            boolean locked = active.isLocked();
             return CalibrationResult.success(active, profiles, locked);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -539,16 +540,44 @@ public final class OperatorConsoleStage {
         final CompareRunsResponseDto capturedCompare = lastCompareResponse;
         final LiveDynoChartModel capturedChart = latestChartModel;
 
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        String initialFileName;
+        if (capturedCompare != null) {
+            initialFileName = "dyno-compare-" + timestamp + ".pdf";
+        } else if (capturedChart != null && capturedChart.hasPlottedData()) {
+            initialFileName = "dyno-live-" + timestamp + ".pdf";
+        } else {
+            initialFileName = "dyno-run-" + timestamp + ".pdf";
+        }
+
+        Path initialDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
+        try {
+            Files.createDirectories(initialDir);
+        } catch (Exception ignored) {}
+
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Save Dyno Report");
+        fileChooser.getExtensionFilters().add(
+            new FileChooser.ExtensionFilter("PDF Files (*.pdf)", "*.pdf")
+        );
+        fileChooser.setInitialDirectory(initialDir.toFile());
+        fileChooser.setInitialFileName(initialFileName);
+        java.io.File chosen = fileChooser.showSaveDialog(stage);
+        if (chosen == null) {
+            return;
+        }
+        final Path outputPath = chosen.toPath();
+
         runControlState.setBusy("Preparing print export...");
         renderRoot();
         CompletableFuture
             .supplyAsync(() -> {
                 if (capturedCompare != null) {
-                    return printCompareExport(capturedCompare);
+                    return printCompareExport(capturedCompare, outputPath);
                 } else if (capturedChart != null && capturedChart.hasPlottedData()) {
-                    return printLiveSnapshot(capturedChart);
+                    return printLiveSnapshot(capturedChart, outputPath);
                 } else {
-                    return printLatestCompletedRun();
+                    return printLatestCompletedRun(outputPath);
                 }
             }, controlExecutor)
             .thenAccept(result -> Platform.runLater(() -> {
@@ -557,7 +586,7 @@ public final class OperatorConsoleStage {
                     runControlState.showOperatorMessage(result.error, OperatorViewModel.Tone.ALERT);
                 } else {
                     runControlState.showOperatorMessage(
-                        "Exported report: " + result.outputFile.getFileName(),
+                        "Saved to: " + result.outputFile.getFileName(),
                         OperatorViewModel.Tone.NORMAL
                     );
                 }
@@ -565,12 +594,8 @@ public final class OperatorConsoleStage {
             }));
     }
 
-    private PrintResult printCompareExport(CompareRunsResponseDto compareResponse) {
+    private PrintResult printCompareExport(CompareRunsResponseDto compareResponse, Path outputFile) {
         try {
-            Path outputDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
-            Files.createDirectories(outputDir);
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-            Path outputFile = outputDir.resolve("dyno-compare-" + timestamp + ".pdf");
             DynoPdfExporter.writeCompare(compareResponse, outputFile);
             return PrintResult.success(outputFile);
         } catch (Exception error) {
@@ -578,12 +603,8 @@ public final class OperatorConsoleStage {
         }
     }
 
-    private PrintResult printLiveSnapshot(LiveDynoChartModel chartModel) {
+    private PrintResult printLiveSnapshot(LiveDynoChartModel chartModel, Path outputFile) {
         try {
-            Path outputDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
-            Files.createDirectories(outputDir);
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-            Path outputFile = outputDir.resolve("dyno-live-" + timestamp + ".pdf");
             DynoPdfExporter.writeLiveSnapshot(
                 chartModel.getRunLabel(),
                 chartModel.getChartCaption(),
@@ -596,7 +617,7 @@ public final class OperatorConsoleStage {
         }
     }
 
-    private PrintResult printLatestCompletedRun() {
+    private PrintResult printLatestCompletedRun(Path outputFile) {
         try {
             List<RunHistorySummaryDto> runs = historyApiClient.listRuns();
             List<RunHistorySummaryDto> completed = completedRuns(runs);
@@ -615,10 +636,6 @@ public final class OperatorConsoleStage {
             List<RunHistoryFrameDto> frames = series != null && series.getFrames() != null
                 ? series.getFrames() : Collections.emptyList();
 
-            Path outputDir = Paths.get(System.getProperty("user.home"), "dyno_data", "exports");
-            Files.createDirectories(outputDir);
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-            Path outputFile = outputDir.resolve("dyno-run-" + timestamp + ".pdf");
             DynoPdfExporter.writeSingleRun(detail, frames, outputFile);
             return PrintResult.success(outputFile);
         } catch (InterruptedException error) {

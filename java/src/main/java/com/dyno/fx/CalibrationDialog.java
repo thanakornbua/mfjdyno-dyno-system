@@ -353,11 +353,27 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
     }
 
     private void handleLock() {
+        PasswordField pwdField = new PasswordField();
+        pwdField.setPromptText(UiText.text("Password"));
+        ButtonType confirmType = new ButtonType(UiText.text("Confirm"), ButtonBar.ButtonData.OK_DONE);
+        Dialog<String> pwdDialog = new Dialog<String>();
+        pwdDialog.setTitle(UiText.text("Lock Calibration"));
+        pwdDialog.setHeaderText(UiText.text("Enter password to lock calibration"));
+        pwdDialog.initOwner(getOwner());
+        pwdDialog.initModality(Modality.APPLICATION_MODAL);
+        pwdDialog.getDialogPane().getButtonTypes().addAll(confirmType, ButtonType.CANCEL);
+        pwdDialog.getDialogPane().setContent(new VBox(8, new Label(UiText.text("Password:")), pwdField));
+        pwdDialog.setResultConverter(bt -> confirmType.equals(bt) ? pwdField.getText() : null);
+        Optional<String> pwd = pwdDialog.showAndWait();
+        if (!pwd.isPresent() || pwd.get().trim().isEmpty()) {
+            return;
+        }
+        final String password = pwd.get().trim();
         setBusy(true, UiText.text("Locking calibration..."));
         CompletableFuture
             .supplyAsync(() -> {
                 try {
-                    client.lockCalibration("MFJ123456");
+                    client.lockCalibration(password);
                     return Boolean.TRUE;
                 } catch (Exception e) {
                     throw new CompletionException(e);

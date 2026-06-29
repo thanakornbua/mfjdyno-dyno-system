@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.dyno.presenter.LiveFrameContractTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-06-02T19:22:07" hostname="someonelaptop" time="0.007">
+<testsuite name="com.dyno.presenter.LiveFrameContractTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-06-04T05:36:21" hostname="someonelaptop" time="0.007">
   <properties/>
   <testcase name="backendEnvelopeParsesIntoFrontendFrameModel" classname="com.dyno.presenter.LiveFrameContractTest" time="0.007"/>
   <system-out><![CDATA[]]></system-out>

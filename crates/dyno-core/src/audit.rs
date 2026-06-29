@@ -17,6 +17,7 @@ pub enum AuditEvent {
     StartRun,
     StopRun,
     ResetFault,
+    PasswordChanged,
 }
 
 impl std::fmt::Display for AuditEvent {
@@ -28,6 +29,7 @@ impl std::fmt::Display for AuditEvent {
             Self::StartRun => "start_run",
             Self::StopRun => "stop_run",
             Self::ResetFault => "reset_fault",
+            Self::PasswordChanged => "password_changed",
         };
         f.write_str(s)
     }
@@ -44,6 +46,7 @@ impl std::str::FromStr for AuditEvent {
             "start_run" => Ok(Self::StartRun),
             "stop_run" => Ok(Self::StopRun),
             "reset_fault" => Ok(Self::ResetFault),
+            "password_changed" => Ok(Self::PasswordChanged),
             _ => Err(()),
         }
     }

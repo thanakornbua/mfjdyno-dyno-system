@@ -168,6 +168,7 @@ pub struct CalibrationResponseDto {
     pub validation: CalibrationValidation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activated: Option<bool>,
+    pub locked: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,6 +237,27 @@ pub struct CalibrationLockRequestDto {
 #[derive(Debug, Serialize)]
 pub struct CalibrationLockResponseDto {
     pub locked: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequestDto {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangePasswordResponseDto {
+    pub changed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyPasswordRequestDto {
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifyPasswordResponseDto {
+    pub valid: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +338,8 @@ pub fn router(
         .route("/api/calibration", get(get_active_calibration))
         .route("/api/calibration/lock", post(lock_calibration_handler))
         .route("/api/calibration/unlock", post(unlock_calibration_handler))
+        .route("/api/system/password", post(change_password_handler))
+        .route("/api/system/verify-password", post(verify_password_handler))
         .route(
             "/api/calibration/profiles",
             get(get_calibration_profiles).post(create_calibration_profile),
@@ -503,10 +527,13 @@ async fn get_active_calibration(
         .map_err(ApiError::Internal)?
         .ok_or_else(|| ApiError::NotFound("active calibration profile not found".to_owned()))?;
 
+    let locked = state.calibration_lock.is_locked().await;
+
     Ok(Json(CalibrationResponseDto {
         validation: validate_profile(&profile),
         profile: calibration_profile_dto(profile),
         activated: None,
+        locked,
     }))
 }
 
@@ -561,6 +588,7 @@ async fn create_calibration_profile(
         profile: calibration_profile_dto(change.profile.clone()),
         validation: validate_profile(&change.profile),
         activated: Some(change.activated),
+        locked: false,
     }))
 }
 
@@ -627,6 +655,7 @@ async fn update_calibration_profile(
         profile: calibration_profile_dto(change.profile.clone()),
         validation: validate_profile(&change.profile),
         activated: Some(change.activated),
+        locked: false,
     }))
 }
 
@@ -661,6 +690,7 @@ async fn duplicate_calibration_profile(
         profile: calibration_profile_dto(change.profile.clone()),
         validation: validate_profile(&change.profile),
         activated: Some(change.activated),
+        locked: false,
     }))
 }
 
@@ -738,6 +768,7 @@ async fn activate_calibration(
         profile: calibration_profile_dto(active_profile),
         validation,
         activated: Some(true),
+        locked: false,
     }))
 }
 
@@ -893,6 +924,47 @@ async fn unlock_calibration_handler(
         .await;
 
     Ok(Json(CalibrationLockResponseDto { locked: false }))
+}
+
+async fn change_password_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<ChangePasswordRequestDto>,
+) -> Result<Json<ChangePasswordResponseDto>, ApiError> {
+    let current = state.storage.get_system_password().await.map_err(ApiError::Internal)?;
+    if request.current_password != current {
+        return Err(ApiError::Unauthorized("current password is incorrect".to_owned()));
+    }
+    if request.new_password.len() < 6 {
+        return Err(ApiError::BadRequest(
+            "new password must be at least 6 characters".to_owned(),
+        ));
+    }
+    if request.new_password.chars().any(|c| c.is_whitespace()) {
+        return Err(ApiError::BadRequest(
+            "new password must not contain whitespace".to_owned(),
+        ));
+    }
+    state
+        .storage
+        .set_system_password(&request.new_password)
+        .await
+        .map_err(ApiError::Internal)?;
+    let _ = state
+        .audit_logger
+        .log(AuditEvent::PasswordChanged, None, serde_json::json!({}))
+        .await;
+    Ok(Json(ChangePasswordResponseDto { changed: true }))
+}
+
+async fn verify_password_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<VerifyPasswordRequestDto>,
+) -> Result<Json<VerifyPasswordResponseDto>, ApiError> {
+    let current = state.storage.get_system_password().await.map_err(ApiError::Internal)?;
+    if request.password != current {
+        return Err(ApiError::Unauthorized("password is incorrect".to_owned()));
+    }
+    Ok(Json(VerifyPasswordResponseDto { valid: true }))
 }
 
 async fn get_audit_log(

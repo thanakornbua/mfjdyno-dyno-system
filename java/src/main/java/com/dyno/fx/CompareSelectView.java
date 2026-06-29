@@ -153,8 +153,25 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
     }
 
     private void installColumns() {
-        TableColumn<RunHistorySummaryDto, Long> runIdColumn = new TableColumn<RunHistorySummaryDto, Long>(UiText.text("RUN ID"));
-        runIdColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, Long>("runId"));
+        TableColumn<RunHistorySummaryDto, String> runIdColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("RUN ID"));
+        runIdColumn.setCellValueFactory(cellData -> {
+            RunHistorySummaryDto run = cellData.getValue();
+            String vehicle = run.getVehicleName();
+            String plate = run.getLicensePlate();
+            boolean hasVehicle = vehicle != null && !vehicle.trim().isEmpty();
+            boolean hasPlate = plate != null && !plate.trim().isEmpty();
+            String label;
+            if (hasVehicle) {
+                label = hasPlate
+                    ? "Run #" + run.getRunId() + " — " + vehicle.trim() + " (" + plate.trim() + ")"
+                    : "Run #" + run.getRunId() + " — " + vehicle.trim();
+            } else if (hasPlate) {
+                label = "Run #" + run.getRunId() + " — " + plate.trim();
+            } else {
+                label = "Run #" + run.getRunId();
+            }
+            return new javafx.beans.property.SimpleStringProperty(label);
+        });
 
         TableColumn<RunHistorySummaryDto, String> dateColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("DATE"));
         dateColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, String>("date"));

@@ -46,6 +46,12 @@ public final class RunHistoryDetailDto {
     @JsonProperty("peak_torque_rpm")
     private Double peakTorqueRpm;
 
+    @JsonProperty("vehicle_name")
+    private String vehicleName;
+
+    @JsonProperty("license_plate")
+    private String licensePlate;
+
     public Long getRunId() {
         return runId;
     }
@@ -100,5 +106,13 @@ public final class RunHistoryDetailDto {
 
     public Double getPeakTorqueRpm() {
         return peakTorqueRpm;
+    }
+
+    public String getVehicleName() {
+        return vehicleName;
+    }
+
+    public String getLicensePlate() {
+        return licensePlate;
     }
 }

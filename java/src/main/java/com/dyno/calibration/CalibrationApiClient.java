@@ -96,20 +96,41 @@ public final class CalibrationApiClient {
         sendLockRequest("/api/calibration/unlock", password);
     }
 
-    public boolean isCalibrationLocked() throws IOException, InterruptedException {
-        HttpRequest request = requestBuilder("/api/calibration/lock")
-            .GET()
-            .build();
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        ensureSuccess(response.statusCode(), response.body());
-        return mapper.readTree(response.body()).path("locked").asBoolean();
-    }
-
     public List<AuditRecordDto> listAuditRecords() throws IOException, InterruptedException {
         HttpRequest request = requestBuilder("/api/audit")
             .GET()
             .build();
         return send(request, new TypeReference<List<AuditRecordDto>>() { });
+    }
+
+    public void changePassword(String currentPassword, String newPassword)
+            throws IOException, InterruptedException, LockException {
+        String body = mapper.writeValueAsString(Map.of(
+            "current_password", currentPassword,
+            "new_password", newPassword
+        ));
+        HttpRequest request = requestBuilder("/api/system/password")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 401 || response.statusCode() == 400) {
+            throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
+        }
+        ensureSuccess(response.statusCode(), response.body());
+    }
+
+    public void verifyPassword(String password) throws IOException, InterruptedException, LockException {
+        String body = mapper.writeValueAsString(Map.of("password", password));
+        HttpRequest request = requestBuilder("/api/system/verify-password")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 401) {
+            throw new LockException(response.statusCode(), "Incorrect password");
+        }
+        ensureSuccess(response.statusCode(), response.body());
     }
 
     private String sendLockRequest(String path, String password) throws IOException, InterruptedException, LockException {
@@ -173,6 +194,20 @@ public final class CalibrationApiClient {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         ensureSuccess(response.statusCode(), response.body());
         return mapper.readValue(response.body(), responseType);
+    }
+
+    private String extractErrorMessage(String body) {
+        if (body != null && !body.trim().isEmpty()) {
+            try {
+                JsonNode json = mapper.readTree(body);
+                JsonNode error = json.get("error");
+                if (error != null && !error.asText().trim().isEmpty()) {
+                    return error.asText().trim();
+                }
+            } catch (IOException ignored) {
+            }
+        }
+        return body != null ? body : "Unknown error";
     }
 
     private void ensureSuccess(int statusCode, String body) throws IOException {

@@ -135,3 +135,18 @@ run {
 }
 
 build.dependsOn thaiPdfHarnessClasses
+jar {
+    manifest {
+        attributes 'Main-Class': mainClassName
+    }
+    from {
+        configurations.runtimeClasspath.collect {
+            it.isDirectory() ? it : zipTree(it)
+        }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/*.EC'
+}

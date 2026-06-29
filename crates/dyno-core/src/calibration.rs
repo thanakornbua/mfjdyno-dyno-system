@@ -13,7 +13,7 @@ use tracing::warn;
 use crate::config::Config;
 use crate::storage::Storage;
 
-pub const CALIBRATION_UNLOCK_PASSWORD: &str = "MFJ123456";
+const DEFAULT_SYSTEM_PASSWORD: &str = "MFJ123456";
 
 #[derive(Debug, Error)]
 pub enum CalibrationError {
@@ -70,7 +70,14 @@ impl CalibrationLock {
     }
 
     pub async fn lock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
-        if password != CALIBRATION_UNLOCK_PASSWORD {
+        let expected = match &self.storage {
+            Some(storage) => storage
+                .get_system_password()
+                .await
+                .unwrap_or_else(|_| DEFAULT_SYSTEM_PASSWORD.to_owned()),
+            None => DEFAULT_SYSTEM_PASSWORD.to_owned(),
+        };
+        if password != expected {
             return Err(CalibrationError::WrongPassword);
         }
         let mut guard = self.locked.lock().await;
@@ -87,7 +94,14 @@ impl CalibrationLock {
     }
 
     pub async fn unlock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
-        if password != CALIBRATION_UNLOCK_PASSWORD {
+        let expected = match &self.storage {
+            Some(storage) => storage
+                .get_system_password()
+                .await
+                .unwrap_or_else(|_| DEFAULT_SYSTEM_PASSWORD.to_owned()),
+            None => DEFAULT_SYSTEM_PASSWORD.to_owned(),
+        };
+        if password != expected {
             return Err(CalibrationError::WrongPassword);
         }
         let mut guard = self.locked.lock().await;

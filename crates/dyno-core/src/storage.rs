@@ -599,6 +599,17 @@ impl Storage {
             .context("storage worker dropped set-setting reply")?
     }
 
+    pub async fn get_system_password(&self) -> anyhow::Result<String> {
+        Ok(self
+            .get_setting("system_password")
+            .await?
+            .unwrap_or_else(|| "MFJ123456".to_owned()))
+    }
+
+    pub async fn set_system_password(&self, new_password: &str) -> anyhow::Result<()> {
+        self.set_setting("system_password", new_password).await
+    }
+
     pub async fn flush(&self) -> anyhow::Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -664,6 +675,7 @@ fn storage_worker(
             .context("failed to apply SQLite schema")?;
         apply_storage_migrations(&conn)?;
         initialize_default_calibration_profile(&conn, &bootstrap_profile)?;
+        initialize_default_system_password(&conn)?;
         Ok(conn)
     });
 
@@ -882,6 +894,13 @@ fn initialize_default_calibration_profile(
         Some(profile_snapshot_json(&stored_profile)?),
     )
     .context("failed to create bootstrap calibration audit event")?;
+    Ok(())
+}
+
+fn initialize_default_system_password(conn: &Connection) -> anyhow::Result<()> {
+    if db_get_setting(conn, "system_password")?.is_none() {
+        db_set_setting(conn, "system_password", "MFJ123456")?;
+    }
     Ok(())
 }
 

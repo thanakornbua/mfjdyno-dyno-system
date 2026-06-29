@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.dyno.control.RunControlResponseTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-06-02T19:22:07" hostname="someonelaptop" time="0.006">
+<testsuite name="com.dyno.control.RunControlResponseTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-06-04T05:36:20" hostname="someonelaptop" time="0.006">
   <properties/>
   <testcase name="missingSuccessFallsBackToHttpSuccessStatus" classname="com.dyno.control.RunControlResponseTest" time="0.005"/>
   <testcase name="explicitFalseSuccessWinsOverHttpSuccessStatus" classname="com.dyno.control.RunControlResponseTest" time="0.001"/>

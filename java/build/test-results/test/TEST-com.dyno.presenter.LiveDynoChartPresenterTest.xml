@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.dyno.presenter.LiveDynoChartPresenterTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-06-02T19:22:07" hostname="someonelaptop" time="0.031">
+<testsuite name="com.dyno.presenter.LiveDynoChartPresenterTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-06-04T05:36:21" hostname="someonelaptop" time="0.033">
   <properties/>
   <testcase name="positiveSamplesAfterNegativeOnesStillPlotUntilStateEndsRun" classname="com.dyno.presenter.LiveDynoChartPresenterTest" time="0.018"/>
   <testcase name="negativeSamplesAreSkippedWithoutEndingCollection" classname="com.dyno.presenter.LiveDynoChartPresenterTest" time="0.002"/>
-  <testcase name="backendReplayStyleSweepProducesOrderedChartSeries" classname="com.dyno.presenter.LiveDynoChartPresenterTest" time="0.01"/>
+  <testcase name="backendReplayStyleSweepProducesOrderedChartSeries" classname="com.dyno.presenter.LiveDynoChartPresenterTest" time="0.011"/>
   <testcase name="configuredAxesDriveChartSeriesAndTimeXAxis" classname="com.dyno.presenter.LiveDynoChartPresenterTest" time="0.001"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>
