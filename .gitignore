@@ -1,3 +1,72 @@
-/.java-frontenf-link
-dyno.db
-target/
+# Build outputs
+/target/
+/java/build/
+/operator-console/build/
+/build/
+out/
+
+# Gradle caches and generated state
+/.gradle/
+/java/.gradle/
+**/.gradle/
+
+# PlatformIO / firmware build artifacts
+/.pio/
+/firmware/.pio/
+/firmware/firmware-test/.pio/
+**/.pio/
+.pioenvs/
+.piolibdeps/
+
+# Java artifacts
+*.class
+*.jar
+*.war
+*.ear
+*.jmod
+hs_err_pid*
+replay_pid*
+
+# Rust generated files
+**/*.rs.bk
+
+# Local databases and runtime data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+dyno_data/
+exports/
+logs/
+*.log
+
+# Local environment and device configuration
+.env
+.env.*
+*.local
+esp32-device-config.local.json
+esp32-last-applied.json
+!*.example
+!*.example.*
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# OS and filesystem noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+
+# Local assistant/tooling state
+/.java-frontend-link
