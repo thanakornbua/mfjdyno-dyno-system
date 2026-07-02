@@ -6,6 +6,7 @@
 - Backend env file: `/etc/dyno/dynod.env`
 - Backend state directory: `/var/lib/dyno`
 - Backend database: `/var/lib/dyno/dyno.db`
+- ESP32 desired config behavior: [ESP32_CONFIG_SYNC.md](/home/thanakornb/dyno-system/docs/ESP32_CONFIG_SYNC.md)
 - Operator console launcher: `/usr/local/bin/dyno-operator-console`
 - Operator console install root: `/opt/dyno-operator-console`
 - Operator console env file: `/etc/dyno/operator-console.env`

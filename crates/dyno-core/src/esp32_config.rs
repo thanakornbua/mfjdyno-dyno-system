@@ -18,7 +18,7 @@ use tokio::time::timeout;
 use tracing::{info, warn};
 
 use dyno_protocol::{
-    DeviceInfo, DeviceInfoResponse, DynoConfig, ErrorCode, ErrorResponse, PacketType,
+    DeviceInfo, DeviceInfoResponse, DynoConfig, EngineEdgeMode, ErrorCode, ErrorResponse, PacketType,
     WirePacket,
 };
 
@@ -520,12 +520,43 @@ fn validate_pin(name: &str, value: u8, errors: &mut Vec<String>) {
 }
 
 fn load_config_file(path: &Path) -> Result<DynoConfig, anyhow::Error> {
-    let raw = fs::read_to_string(path)
-        .map_err(anyhow::Error::from)
-        .map_err(|source| anyhow::anyhow!("read {}: {source}", path.display()))?;
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let config = generated_default_config();
+            write_json_file(path, &config)
+                .map_err(|source| anyhow::anyhow!("write generated default {}: {source}", path.display()))?;
+            warn!(
+                "{} not found at {} — generated default config; REVIEW BEFORE RUNNING A REAL PULL",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("esp32-device-config.json"),
+                path.display()
+            );
+            serde_json::to_string_pretty(&config)?
+        }
+        Err(err) => return Err(anyhow::anyhow!("read {}: {err}", path.display())),
+    };
     serde_json::from_str(&raw)
         .map_err(anyhow::Error::from)
         .map_err(|source| anyhow::anyhow!("parse {}: {source}", path.display()))
+}
+
+fn generated_default_config() -> DynoConfig {
+    DynoConfig {
+        engine_pulse_pin: 4,
+        engine_pulses_per_rev: 1.0,
+        engine_edge_mode: EngineEdgeMode::Rising,
+        encoder_pin_a: 5,
+        encoder_ppr: 60,
+        can_rx_pin: 21,
+        can_tx_pin: 22,
+        can_bitrate: 500_000,
+        uart_tx_pin: 17,
+        uart_rx_pin: 16,
+        uart_baud: 921_600,
+        telemetry_rate_hz: 20,
+    }
 }
 
 fn load_optional_state_file(path: &Path) -> Result<Option<PersistedEsp32ConfigState>, anyhow::Error> {
@@ -687,6 +718,46 @@ mod tests {
 
         assert_eq!(restored, state);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn missing_desired_config_is_generated_with_default_schema() {
+        let unique = now_ms();
+        let desired_path = std::env::temp_dir().join(format!("esp32-missing-desired-{unique}.json"));
+        let state_path = std::env::temp_dir().join(format!("esp32-missing-state-{unique}.json"));
+        let _ = fs::remove_file(&desired_path);
+        let manager = manager_with_paths(&desired_path, &state_path);
+
+        let loaded = manager.load_desired_config().expect("generated desired config");
+
+        assert_eq!(loaded, generated_default_config());
+        assert!(desired_path.exists());
+        let raw = fs::read_to_string(&desired_path).expect("read generated config");
+        let restored: DynoConfig = serde_json::from_str(&raw).expect("generated config parses");
+        assert_eq!(restored, generated_default_config());
+
+        let _ = fs::remove_file(desired_path);
+        let _ = fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn corrupt_desired_config_is_not_overwritten() {
+        let unique = now_ms();
+        let desired_path = std::env::temp_dir().join(format!("esp32-corrupt-desired-{unique}.json"));
+        let state_path = std::env::temp_dir().join(format!("esp32-corrupt-state-{unique}.json"));
+        fs::write(&desired_path, "{not valid json").expect("write corrupt config");
+        let manager = manager_with_paths(&desired_path, &state_path);
+
+        let err = manager.load_desired_config().expect_err("corrupt config should fail");
+
+        assert!(err.to_string().contains("failed to load desired ESP32 config"));
+        assert_eq!(
+            fs::read_to_string(&desired_path).expect("read corrupt config"),
+            "{not valid json"
+        );
+
+        let _ = fs::remove_file(desired_path);
+        let _ = fs::remove_file(state_path);
     }
 
     #[tokio::test]
