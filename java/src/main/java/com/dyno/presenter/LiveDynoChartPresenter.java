@@ -17,6 +17,7 @@ import java.util.Objects;
 
 public final class LiveDynoChartPresenter {
     private static final DecimalFormat ONE_DECIMAL = new DecimalFormat("0.0");
+    private static final int MAX_LIVE_POINTS_PER_SERIES = 20_000;
 
     private final PropertyChangeSupport changes = new PropertyChangeSupport(this);
 
@@ -171,6 +172,10 @@ public final class LiveDynoChartPresenter {
             SeriesState state = seriesStates.get(index);
             Double yValue = state.axis.yValue(frame);
             if (!state.axis.shouldPlot(yValue)) {
+                continue;
+            }
+            // Bound memory during abnormally long recordings (~17 min at 20 Hz).
+            if (state.points.size() >= MAX_LIVE_POINTS_PER_SERIES) {
                 continue;
             }
             state.points.add(new ChartPlotPoint(xValue.doubleValue(), yValue.doubleValue()));

@@ -991,7 +991,13 @@ fn initialize_default_calibration_profile(
 
 fn initialize_default_system_password(conn: &Connection) -> anyhow::Result<()> {
     if db_get_setting(conn, "system_password")?.is_none() {
-        db_set_setting(conn, "system_password", "MFJ123456")?;
+        // DYNO_SYSTEM_PASSWORD lets installers avoid shipping the built-in
+        // default; it is only consulted when no password is stored yet.
+        let initial = std::env::var("DYNO_SYSTEM_PASSWORD")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "MFJ123456".to_owned());
+        db_set_setting(conn, "system_password", &initial)?;
     }
     Ok(())
 }

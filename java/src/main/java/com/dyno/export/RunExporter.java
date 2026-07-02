@@ -87,6 +87,7 @@ public final class RunExporter {
         PdfWriter writer = new PdfWriter(outputFile);
         PdfDocument pdfDoc = new PdfDocument(writer);
         Document doc = new Document(pdfDoc, PageSize.A4);
+        try {
         doc.setMargins(48, 48, 48, 48);
         doc.setFont(font);
         doc.setFontSize(10);
@@ -154,7 +155,9 @@ public final class RunExporter {
                     .setFont(font).setFontSize(8).setFontColor(txtMuted)
                     .setTextAlignment(TextAlignment.CENTER))));
 
-        doc.close();
+        } finally {
+            doc.close();
+        }
     }
 
     static TreeMap<Integer, RunHistoryFrameDto> bucket(List<RunHistoryFrameDto> frames, int rpmStep) {

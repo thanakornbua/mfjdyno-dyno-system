@@ -156,6 +156,7 @@ public final class DynoPdfExporter {
         PdfWriter writer = new PdfWriter(outputFile.toFile());
         PdfDocument pdfDoc = new PdfDocument(writer);
         Document doc = openDoc(pdfDoc, font);
+        try {
 
         // Title
         addHeader(doc, LBL_SINGLE_TITLE, runLabel(detail), font);
@@ -199,7 +200,9 @@ public final class DynoPdfExporter {
 
         // Footer
         addFooter(doc, font);
-        doc.close();
+        } finally {
+            doc.close();
+        }
     }
 
     /**
@@ -230,6 +233,7 @@ public final class DynoPdfExporter {
         PdfWriter writer = new PdfWriter(outputFile.toFile());
         PdfDocument pdfDoc = new PdfDocument(writer);
         Document doc = openDoc(pdfDoc, font);
+        try {
 
         String subtitle = (caption != null && !caption.trim().isEmpty())
             ? caption.trim()
@@ -244,7 +248,9 @@ public final class DynoPdfExporter {
         doc.add(vSpacer(12));
 
         addFooter(doc, font);
-        doc.close();
+        } finally {
+            doc.close();
+        }
     }
 
     /**
@@ -271,6 +277,7 @@ public final class DynoPdfExporter {
         PdfWriter writer = new PdfWriter(outputFile.toFile());
         PdfDocument pdfDoc = new PdfDocument(writer);
         Document doc = openDoc(pdfDoc, font);
+        try {
 
         // Title
         String subtitle = "Comparing " + runs.size() + " stored run" + (runs.size() == 1 ? "" : "s");
@@ -307,7 +314,9 @@ public final class DynoPdfExporter {
         }
 
         addFooter(doc, font);
-        doc.close();
+        } finally {
+            doc.close();
+        }
     }
 
     // =========================================================================

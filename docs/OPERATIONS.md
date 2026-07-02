@@ -143,3 +143,10 @@ DYNO_API_BIND=0.0.0.0:9001
 - The operator console cannot connect: confirm `DYNO_UI_API_BASE_URL` and `DYNO_UI_WS_URI` match the backend bind addresses and host firewall rules.
 - The operator console starts but control actions fail: confirm `DYNO_CONTROL_API_BASE_URL` points to the run-control service. That API is separate from `dynod`.
 - The console service exits immediately under systemd: set `DISPLAY` and `XAUTHORITY` in `/etc/dyno/operator-console.env`, or launch the console manually inside the desktop session.
+
+## Security and maintenance notes
+
+- The HTTP API (:9001) and WebSocket (:9000) have **no authentication**. The default env files bind `0.0.0.0`, exposing run history, run control, calibration, and run deletion to the whole LAN. On installs where the operator console runs on the same machine as `dynod`, bind to loopback instead: `DYNO_WS_BIND=127.0.0.1:9000`, `DYNO_API_BIND=127.0.0.1:9001`. Otherwise keep the dyno network isolated/firewalled.
+- `POST /api/dev/seed-run` is disabled unless `DYNO_ENABLE_DEV_API=true` (or a debug build). Do not enable it in production env files.
+- The system password (calibration unlock) is stored in the `settings` table. On first start it defaults to a built-in value; set `DYNO_SYSTEM_PASSWORD` in the environment for the very first launch of a new database to choose your own. Changing it later is a DB update on the `system_password` key.
+- The `frames` table grows without bound (one row per telemetry frame per recorded run, ~100 Hz). On a busy shop machine, periodically delete old runs from the operator console (deletes cascade to frames) or via `DELETE /api/runs/:id`, then reclaim space with `sqlite3 /var/lib/dyno/dyno.db 'VACUUM;'` while `dynod` is stopped.
