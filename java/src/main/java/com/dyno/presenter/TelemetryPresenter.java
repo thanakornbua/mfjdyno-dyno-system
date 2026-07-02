@@ -218,7 +218,13 @@ public final class TelemetryPresenter {
             afrTile,
             secondaryMetrics,
             chartPoints
-        );
+        ).withDialValues(new OperatorViewModel.DialValues(
+            rpm,
+            frame != null ? frame.getSpeedKmh() : null,
+            powerHp,
+            torqueNm,
+            afr
+        ));
     }
 
     private OperatorViewModel.SecondaryMetricModel buildSecondaryMetric(

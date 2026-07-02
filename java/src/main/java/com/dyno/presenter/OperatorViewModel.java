@@ -164,6 +164,55 @@ public final class OperatorViewModel {
     private final MetricTileModel afrTile;
     private final List<SecondaryMetricModel> secondaryMetrics;
     private final List<RunPoint> chartPoints;
+    private DialValues dialValues;
+
+    /** Raw numeric telemetry for dial gauges (formatted tile text is lossy). */
+    public static final class DialValues {
+        private final Double engineRpm;
+        private final Double speedKmh;
+        private final Double powerHp;
+        private final Double torqueNm;
+        private final Double afr;
+
+        public DialValues(Double engineRpm, Double speedKmh, Double powerHp, Double torqueNm, Double afr) {
+            this.engineRpm = engineRpm;
+            this.speedKmh = speedKmh;
+            this.powerHp = powerHp;
+            this.torqueNm = torqueNm;
+            this.afr = afr;
+        }
+
+        public Double getEngineRpm() {
+            return engineRpm;
+        }
+
+        public Double getSpeedKmh() {
+            return speedKmh;
+        }
+
+        public Double getPowerHp() {
+            return powerHp;
+        }
+
+        public Double getTorqueNm() {
+            return torqueNm;
+        }
+
+        public Double getAfr() {
+            return afr;
+        }
+    }
+
+    /** Fluent attach used by TelemetryPresenter right after construction. */
+    public OperatorViewModel withDialValues(DialValues values) {
+        this.dialValues = values;
+        return this;
+    }
+
+    /** May be null (older constructors / tests). */
+    public DialValues getDialValues() {
+        return dialValues;
+    }
 
     public OperatorViewModel(
         String connectionText,

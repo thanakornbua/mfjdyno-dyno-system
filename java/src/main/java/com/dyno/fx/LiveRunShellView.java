@@ -119,11 +119,17 @@ public final class LiveRunShellView extends BorderPane {
     private final Label operatorStatusSecondary = new Label(UiText.text("Connection: DISCONNECTED | State: IDLE"));
 
     private final Label runModeTitle = sectionTitle(UiText.text("RUN MODE"));
-    private final Label runModeRpmValue = runModeMetricValue("—");
-    private final Label runModeSpeedValue = runModeMetricValue("—");
-    private final Label runModeStateValue = runModeMetricValue("—");
-    private final Label runModePowerValue = runModeMetricValue("—");
-    private final Label runModeTorqueValue = runModeMetricValue("—");
+    private final DialGaugeView runModeRpmDial =
+        new DialGaugeView("RPM", "x1000", 0, 8000, 1000, 340);
+    private final DialGaugeView runModeSpeedDial =
+        new DialGaugeView("SPEED", "km/h", 0, 240, 30, 260);
+    private final DialGaugeView runModePowerDial =
+        new DialGaugeView("POWER", "HP", 0, 400, 50, 260);
+    private final DialGaugeView runModeTorqueDial =
+        new DialGaugeView("TORQUE", "Nm", 0, 500, 50, 260);
+    private final Label runModeRunId = runModeMetricValue("—");
+    private final Label runModeStateBadge = new Label("—");
+    private final Label runModeAfrValue = runModeMetricValue("—");
 
     public LiveRunShellView() {
         this(new ControlActions() {
@@ -314,11 +320,16 @@ public final class LiveRunShellView extends BorderPane {
         renderSecondary(saeCfView, sec, 4);
         renderSecondary(faultCountView, sec, 5);
 
-        runModeRpmValue.setText(model.getRpmTile().getValueText() + " RPM");
-        runModeSpeedValue.setText(sec.size() > 1 ? sec.get(1).getValueText() + " km/h" : "— km/h");
-        runModeStateValue.setText(model.getStateText());
-        runModePowerValue.setText(model.getPowerTile().getValueText() + " HP");
-        runModeTorqueValue.setText(model.getTorqueTile().getValueText() + " Nm");
+        OperatorViewModel.DialValues dials = model.getDialValues();
+        runModeRpmDial.update(dials != null ? dials.getEngineRpm() : null);
+        runModeSpeedDial.update(dials != null ? dials.getSpeedKmh() : null);
+        runModePowerDial.update(dials != null ? dials.getPowerHp() : null);
+        runModeTorqueDial.update(dials != null ? dials.getTorqueNm() : null);
+        runModeAfrValue.setText(UiText.text("AFR ")
+            + (dials != null && dials.getAfr() != null
+                ? String.format(java.util.Locale.US, "%.2f", dials.getAfr().doubleValue()) : "—"));
+        runModeRunId.setText(controlState.runLabel());
+        renderRunStateBadge(machineState);
 
         chartRunLabel.setText(UiText.text(chartModel.getRunLabel()));
         int overlayCount = chartModel.getOverlayRunCount();
@@ -738,20 +749,49 @@ public final class LiveRunShellView extends BorderPane {
     private VBox buildRunModePane() {
         VBox pane = new VBox(FxTheme.GAP_L);
         pane.setPadding(FxTheme.PAD_PAGE);
+        pane.setAlignment(javafx.geometry.Pos.TOP_CENTER);
         pane.setStyle("-fx-background-color: " + FxTheme.toCss(FxTheme.APP_BACKGROUND) + ";");
 
-        VBox topRow = new VBox(FxTheme.GAP_M,
-            runModeMetricCard(UiText.text("ENGINE RPM"), runModeRpmValue),
-            runModeMetricCard(UiText.text("SPEED"), runModeSpeedValue),
-            runModeMetricCard(UiText.text("RUN STATE"), runModeStateValue)
-        );
-        VBox powerRow = new VBox(FxTheme.GAP_M,
-            runModeMetricCard(UiText.text("POWER"), runModePowerValue),
-            runModeMetricCard(UiText.text("TORQUE"), runModeTorqueValue)
-        );
+        runModeRunId.setFont(Font.font("Monospaced", FontWeight.BOLD, 34));
+        runModeAfrValue.setFont(Font.font("Monospaced", FontWeight.BOLD, 34));
+        runModeStateBadge.setFont(Font.font("SansSerif", FontWeight.BOLD, 22));
+        runModeStateBadge.setPadding(new Insets(FxTheme.GAP_XS, FxTheme.GAP_L, FxTheme.GAP_XS, FxTheme.GAP_L));
+        renderRunStateBadge("IDLE");
 
-        pane.getChildren().addAll(runModeTitle, topRow, powerRow);
+        HBox topStrip = new HBox(FxTheme.GAP_XL, runModeRunId, runModeStateBadge, runModeAfrValue);
+        topStrip.setAlignment(javafx.geometry.Pos.CENTER);
+
+        HBox primaryRow = new HBox(FxTheme.GAP_XL, runModeRpmDial, runModeSpeedDial);
+        primaryRow.setAlignment(javafx.geometry.Pos.CENTER);
+        HBox secondaryRow = new HBox(FxTheme.GAP_XL, runModePowerDial, runModeTorqueDial);
+        secondaryRow.setAlignment(javafx.geometry.Pos.CENTER);
+
+        pane.getChildren().addAll(runModeTitle, topStrip, primaryRow, secondaryRow);
         return pane;
+    }
+
+    /** RPM dial full-scale follows the operator-chosen chart scale. */
+    public void setRunModeRpmMax(double rpmMax) {
+        runModeRpmDial.setRange(0, rpmMax, rpmMax >= 8000 ? 1000 : 500);
+    }
+
+    private void renderRunStateBadge(String machineState) {
+        String state = machineState == null ? "—" : machineState;
+        runModeStateBadge.setText(UiText.text(state));
+        OperatorViewModel.Tone tone;
+        if ("RECORDING".equals(state)) {
+            tone = OperatorViewModel.Tone.NORMAL;
+        } else if ("STOPPING".equals(state) || "ARMED".equals(state)) {
+            tone = OperatorViewModel.Tone.CAUTION;
+        } else if ("FAULT".equals(state)) {
+            tone = OperatorViewModel.Tone.FAULT;
+        } else {
+            tone = OperatorViewModel.Tone.UNAVAILABLE;
+        }
+        runModeStateBadge.setTextFill(FxTheme.toneColor(tone));
+        runModeStateBadge.setStyle(
+            "-fx-border-color: " + FxTheme.toCss(FxTheme.toneBorder(tone)) + ";"
+            + "-fx-border-radius: 8; -fx-border-width: 2;");
     }
 
     private VBox buildLeftRail() {

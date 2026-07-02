@@ -180,6 +180,7 @@ public final class OperatorConsoleStage {
                 OperatorViewModel model = (OperatorViewModel) event.getNewValue();
                 Platform.runLater(() -> {
                     latestTelemetryModel = model;
+                    applyAutomaticPageTransition(model.getStateText());
                     renderRoot();
                 });
             }
@@ -204,6 +205,31 @@ public final class OperatorConsoleStage {
         stage.show();
         webSocketClient.start();
         startHealthPolling();
+    }
+
+    private final com.dyno.presenter.RunPageDirector runPageDirector =
+        new com.dyno.presenter.RunPageDirector();
+
+    /** State-driven page switching: enter run page on RECORDING (operator-started),
+     *  exit to the graph/dashboard page when the run ends. */
+    private void applyAutomaticPageTransition(String stateText) {
+        com.dyno.presenter.RunPageDirector.Page current = root.isRunModeActive()
+            ? com.dyno.presenter.RunPageDirector.Page.RUN
+            : com.dyno.presenter.RunPageDirector.Page.DASHBOARD;
+        com.dyno.presenter.RunPageDirector.Page next =
+            runPageDirector.onState(stateText, runControlState.isStarted(), current);
+        if (next == null) {
+            return;
+        }
+        if (next == com.dyno.presenter.RunPageDirector.Page.RUN) {
+            root.setRunModeActive(true);
+        } else {
+            root.setRunModeActive(false);
+            runControlState.showOperatorMessage(
+                "Run complete — showing results.",
+                OperatorViewModel.Tone.NORMAL
+            );
+        }
     }
 
     private void handleRunModeRequested() {
@@ -246,6 +272,7 @@ public final class OperatorConsoleStage {
         chartScaleSettings = runConfiguration.getScaleSettings();
         runControlState.updateScaleSettings(chartScaleSettings);
         chartPresenter.setScaleSettings(chartScaleSettings);
+        root.setRunModeRpmMax(chartScaleSettings.getRpmMax());
         submitControlRequest("Starting run...", new ControlRequest() {
             @Override
             public RunControlResponse call() throws Exception {
