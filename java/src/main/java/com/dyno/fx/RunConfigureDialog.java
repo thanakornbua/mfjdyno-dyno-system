@@ -45,6 +45,15 @@ final class RunConfigureDialog {
         TextField plateInput = new TextField(seed.getLicensePlate());
         plateInput.setPromptText("License plate");
 
+        TextField customerNameInput = new TextField(seed.getCustomerName());
+        customerNameInput.setPromptText("Customer name (optional)");
+
+        TextField customerPhoneInput = new TextField(seed.getCustomerPhone());
+        customerPhoneInput.setPromptText("Customer phone (optional)");
+
+        TextField notesInput = new TextField(seed.getNotes());
+        notesInput.setPromptText("Notes (optional)");
+
         ComboBox<RunChartAxis> xAxisInput = new ComboBox<RunChartAxis>(
             FXCollections.observableArrayList(xAxisOptions()));
         xAxisInput.getSelectionModel().select(initialAxes.getXAxis());
@@ -77,14 +86,17 @@ final class RunConfigureDialog {
         grid.setHgap(12);
         grid.setVgap(10);
         grid.addRow(0, new Label("License plate (required):"), plateInput);
-        grid.addRow(1, new Label("X axis:"), xAxisInput);
-        grid.addRow(2, new Label("Y1 axis:"), y1Input);
-        grid.addRow(3, new Label("Y2 axis:"), y2Input);
-        grid.addRow(4, new Label("Y3 axis:"), y3Input);
-        grid.addRow(5, new Label("RPM max / interval:"), pair(rpmMaxInput, rpmStepInput));
-        grid.addRow(6, new Label("AFR max / interval:"), pair(afrMaxInput, afrStepInput));
-        grid.addRow(7, new Label("Speed max / interval:"), pair(speedMaxInput, speedStepInput));
-        grid.addRow(8, new Label("Grid max / interval:"), pair(gridMaxInput, gridStepInput));
+        grid.addRow(1, new Label("Customer name:"), customerNameInput);
+        grid.addRow(2, new Label("Customer phone:"), customerPhoneInput);
+        grid.addRow(3, new Label("Notes:"), notesInput);
+        grid.addRow(4, new Label("X axis:"), xAxisInput);
+        grid.addRow(5, new Label("Y1 axis:"), y1Input);
+        grid.addRow(6, new Label("Y2 axis:"), y2Input);
+        grid.addRow(7, new Label("Y3 axis:"), y3Input);
+        grid.addRow(8, new Label("RPM max / interval:"), pair(rpmMaxInput, rpmStepInput));
+        grid.addRow(9, new Label("AFR max / interval:"), pair(afrMaxInput, afrStepInput));
+        grid.addRow(10, new Label("Speed max / interval:"), pair(speedMaxInput, speedStepInput));
+        grid.addRow(11, new Label("Grid max / interval:"), pair(gridMaxInput, gridStepInput));
 
         VBox content = new VBox(10, grid, validation);
         content.setPadding(new Insets(6, 0, 0, 0));
@@ -117,6 +129,9 @@ final class RunConfigureDialog {
             if (button == ButtonType.OK) {
                 return new RunConfiguration(
                     plateInput.getText().trim(),
+                    customerNameInput.getText().trim(),
+                    customerPhoneInput.getText().trim(),
+                    notesInput.getText().trim(),
                     new RunAxisSelection(
                         xAxisInput.getValue(),
                         y1Input.getValue(),

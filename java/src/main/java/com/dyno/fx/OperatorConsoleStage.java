@@ -250,13 +250,22 @@ public final class OperatorConsoleStage {
             @Override
             public RunControlResponse call() throws Exception {
                 RunControlResponse cfg = runControlApiClient.configure(
-                    new RunConfigureRequest(runConfiguration.getLicensePlate(), null, null));
+                    new RunConfigureRequest(
+                        runConfiguration.getLicensePlate(),
+                        null,
+                        emptyToNull(runConfiguration.getNotes()),
+                        emptyToNull(runConfiguration.getCustomerName()),
+                        emptyToNull(runConfiguration.getCustomerPhone())));
                 if (!cfg.isSuccess()) {
                     return cfg;
                 }
                 return runControlApiClient.start();
             }
         }, runConfiguration);
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value.trim();
     }
 
     private void submitControlRequest(

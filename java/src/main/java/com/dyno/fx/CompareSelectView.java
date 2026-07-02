@@ -2,6 +2,7 @@ package com.dyno.fx;
 
 import com.dyno.history.HistoryApiClient;
 import com.dyno.history.RunHistorySummaryDto;
+import com.dyno.presenter.RunLabels;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
@@ -109,7 +110,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         note.setWrapText(true);
 
         TextField searchField = new TextField();
-        searchField.setPromptText(UiText.text("Search by ID, date, vehicle, plate, HP, torque..."));
+        searchField.setPromptText(UiText.text("Search by plate, customer, phone, vehicle, date... (Enter searches all stored runs)"));
         searchField.textProperty().addListener((obs, oldVal, newVal) -> {
             String lower = newVal == null ? "" : newVal.trim().toLowerCase();
             if (lower.isEmpty()) {
@@ -118,6 +119,9 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
                 filteredRows.setPredicate(run -> matchesSearch(run, lower));
             }
         });
+        // Enter queries the backend so matches are not limited to the
+        // recent runs preloaded into this dialog.
+        searchField.setOnAction(event -> runServerSearch(searchField.getText()));
 
         HBox actionRow = new HBox(8);
         actionRow.setAlignment(Pos.CENTER_LEFT);
@@ -147,31 +151,41 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         if (run.getDate() != null && run.getDate().toLowerCase().contains(lower)) return true;
         if (run.getVehicleName() != null && run.getVehicleName().toLowerCase().contains(lower)) return true;
         if (run.getLicensePlate() != null && run.getLicensePlate().toLowerCase().contains(lower)) return true;
+        if (run.getCustomerName() != null && run.getCustomerName().toLowerCase().contains(lower)) return true;
+        if (run.getCustomerPhone() != null && run.getCustomerPhone().toLowerCase().contains(lower)) return true;
+        if (RunLabels.displayId(run).toLowerCase().contains(lower)) return true;
         if (run.getPeakPowerHp() != null && String.format("%.1f", run.getPeakPowerHp()).contains(lower)) return true;
         if (run.getPeakTorqueNm() != null && String.format("%.1f", run.getPeakTorqueNm()).contains(lower)) return true;
         return false;
     }
 
+    private void runServerSearch(String query) {
+        String trimmed = query == null ? "" : query.trim();
+        statusLabel.setText(UiText.text("Searching..."));
+        Thread worker = new Thread(() -> {
+            try {
+                List<RunHistorySummaryDto> found = client.searchRuns(trimmed.isEmpty() ? null : trimmed);
+                javafx.application.Platform.runLater(() -> {
+                    rows.setAll(found);
+                    statusLabel.setText(found.isEmpty()
+                        ? UiText.text("No stored runs match the search.")
+                        : "");
+                });
+            } catch (IOException error) {
+                javafx.application.Platform.runLater(() ->
+                    statusLabel.setText(UiText.text("Search failed: ") + error.getMessage()));
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        }, "compare-run-search");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
     private void installColumns() {
         TableColumn<RunHistorySummaryDto, String> runIdColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("RUN ID"));
-        runIdColumn.setCellValueFactory(cellData -> {
-            RunHistorySummaryDto run = cellData.getValue();
-            String vehicle = run.getVehicleName();
-            String plate = run.getLicensePlate();
-            boolean hasVehicle = vehicle != null && !vehicle.trim().isEmpty();
-            boolean hasPlate = plate != null && !plate.trim().isEmpty();
-            String label;
-            if (hasVehicle) {
-                label = hasPlate
-                    ? "Run #" + run.getRunId() + " — " + vehicle.trim() + " (" + plate.trim() + ")"
-                    : "Run #" + run.getRunId() + " — " + vehicle.trim();
-            } else if (hasPlate) {
-                label = "Run #" + run.getRunId() + " — " + plate.trim();
-            } else {
-                label = "Run #" + run.getRunId();
-            }
-            return new javafx.beans.property.SimpleStringProperty(label);
-        });
+        runIdColumn.setCellValueFactory(cellData ->
+            new javafx.beans.property.SimpleStringProperty(RunLabels.displayId(cellData.getValue())));
 
         TableColumn<RunHistorySummaryDto, String> dateColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("DATE"));
         dateColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, String>("date"));
@@ -188,6 +202,12 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
             return new javafx.beans.property.SimpleStringProperty(p != null ? p : "");
         });
 
+        TableColumn<RunHistorySummaryDto, String> customerColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("CUSTOMER"));
+        customerColumn.setCellValueFactory(cellData -> {
+            String c = cellData.getValue().getCustomerName();
+            return new javafx.beans.property.SimpleStringProperty(c != null ? c : "");
+        });
+
         TableColumn<RunHistorySummaryDto, String> sourceColumn = new TableColumn<RunHistorySummaryDto, String>(UiText.text("SOURCE"));
         sourceColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, String>("sourceMode"));
 
@@ -200,7 +220,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         TableColumn<RunHistorySummaryDto, Double> torqueColumn = new TableColumn<RunHistorySummaryDto, Double>(UiText.text("PEAK NM"));
         torqueColumn.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, Double>("peakTorqueNm"));
 
-        table.getColumns().setAll(runIdColumn, dateColumn, vehicleColumn, plateColumn, sourceColumn, correctionColumn, powerColumn, torqueColumn);
+        table.getColumns().setAll(runIdColumn, dateColumn, vehicleColumn, plateColumn, customerColumn, sourceColumn, correctionColumn, powerColumn, torqueColumn);
     }
 
     private void installButtons() {

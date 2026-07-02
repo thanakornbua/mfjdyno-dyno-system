@@ -156,40 +156,11 @@ public final class CompareDisplayMapper {
         return RunMetrics.peakPowerFrame(comparedRun);
     }
 
-    private static final java.time.format.DateTimeFormatter DATE_DISPLAY =
-        java.time.format.DateTimeFormatter.ofPattern("dd MMM HH:mm");
-
     public static String runLabel(RunHistoryDetailDto run) {
         if (run == null || run.getRunId() == null) {
             return "RUN";
         }
-        String vehicle = run.getVehicleName();
-        String plate = run.getLicensePlate();
-        boolean hasVehicle = vehicle != null && !vehicle.trim().isEmpty();
-        boolean hasPlate = plate != null && !plate.trim().isEmpty();
-        if (hasVehicle) {
-            return hasPlate
-                ? vehicle.trim() + " (" + plate.trim() + ")"
-                : vehicle.trim();
-        }
-        if (hasPlate) {
-            return "Plate: " + plate.trim();
-        }
-        String datePart = formatRunDate(run.getDate());
-        return datePart != null
-            ? "Run #" + run.getRunId() + " " + datePart
-            : "Run #" + run.getRunId();
-    }
-
-    private static String formatRunDate(String isoDate) {
-        if (isoDate == null || isoDate.trim().isEmpty()) {
-            return null;
-        }
-        try {
-            return java.time.OffsetDateTime.parse(isoDate).format(DATE_DISPLAY);
-        } catch (Exception ignored) {
-            return null;
-        }
+        return RunLabels.displayId(run);
     }
 
     public static String safeValue(Double value, String unit) {

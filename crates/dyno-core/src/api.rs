@@ -27,7 +27,7 @@ use crate::calibration::{
 };
 use crate::health::StartupHealth;
 use crate::run_control::{RunControl, RunControlState};
-use crate::storage::{Storage, StoredFrame, StoredRun};
+use crate::storage::{PendingRunMetadata, Storage, StoredFrame, StoredRun};
 use dyno_types::{
     Esp32TelemetryStatus, LiveFrame, RepeatabilityMetric, RepeatabilityReport, RunState,
     UpdateCalibrationProfileRequest,
@@ -57,6 +57,11 @@ pub struct RunSummaryDto {
     pub correction_mode: String,
     pub vehicle_name: Option<String>,
     pub license_plate: Option<String>,
+    pub run_no: Option<i64>,
+    pub display_id: String,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub notes: Option<String>,
     pub peak_power_hp: f32,
     pub peak_power_rpm: f32,
     pub peak_torque_nm: f32,
@@ -75,6 +80,11 @@ pub struct RunDetailDto {
     pub calibration_profile_name: Option<String>,
     pub vehicle_name: Option<String>,
     pub license_plate: Option<String>,
+    pub run_no: Option<i64>,
+    pub display_id: String,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub notes: Option<String>,
     pub roller_diameter_m: f32,
     pub encoder_pulses_per_rev: f32,
     pub roller_inertia_kg_m2: f32,
@@ -142,11 +152,17 @@ pub struct DevSeedRunResponseDto {
 pub struct PatchRunRequestDto {
     pub vehicle_name: Option<String>,
     pub license_plate: Option<String>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunConfigureRequestDto {
     pub license_plate: Option<String>,
+    pub vehicle_name: Option<String>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
     pub run_mode: Option<String>,
     pub notes: Option<String>,
 }
@@ -421,11 +437,46 @@ async fn configure_run(
     State(state): State<ApiState>,
     Json(request): Json<RunConfigureRequestDto>,
 ) -> Result<Json<RunControlResponseDto>, ApiError> {
-    let snapshot = state.run_control.configure(request.license_plate).await;
+    validate_text_field("license_plate", request.license_plate.as_deref(), 32)?;
+    validate_text_field("vehicle_name", request.vehicle_name.as_deref(), 128)?;
+    validate_text_field("customer_name", request.customer_name.as_deref(), 128)?;
+    validate_text_field("customer_phone", request.customer_phone.as_deref(), 32)?;
+    validate_text_field("notes", request.notes.as_deref(), 1024)?;
+
+    let snapshot = state
+        .run_control
+        .configure(request.license_plate.clone())
+        .await;
+    state
+        .storage
+        .set_pending_run_metadata(PendingRunMetadata {
+            license_plate: request.license_plate,
+            vehicle_name: request.vehicle_name,
+            customer_name: request.customer_name,
+            customer_phone: request.customer_phone,
+            notes: request.notes,
+        })
+        .await
+        .map_err(ApiError::Internal)?;
     Ok(Json(run_control_response(
         "Run configured".to_owned(),
         snapshot,
     )))
+}
+
+fn validate_text_field(
+    name: &str,
+    value: Option<&str>,
+    max_chars: usize,
+) -> Result<(), ApiError> {
+    if let Some(value) = value {
+        if value.chars().count() > max_chars {
+            return Err(ApiError::BadRequest(format!(
+                "{name} exceeds {max_chars} characters"
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn start_run(State(state): State<ApiState>) -> Result<Json<RunControlResponseDto>, ApiError> {
@@ -508,10 +559,22 @@ async fn seed_dev_run(State(state): State<ApiState>) -> Result<Json<DevSeedRunRe
     }))
 }
 
-async fn get_runs(State(state): State<ApiState>) -> Result<Json<Vec<RunSummaryDto>>, ApiError> {
+#[derive(Debug, Deserialize)]
+struct ListRunsQuery {
+    /// Substring match on license plate, customer name, or customer phone.
+    q: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn get_runs(
+    State(state): State<ApiState>,
+    Query(query): Query<ListRunsQuery>,
+) -> Result<Json<Vec<RunSummaryDto>>, ApiError> {
+    validate_text_field("q", query.q.as_deref(), 128)?;
+    let limit = query.limit.unwrap_or(20).min(200);
     let runs = state
         .storage
-        .list_recent_runs(20)
+        .search_recent_runs(query.q, limit)
         .await
         .map_err(ApiError::Internal)?;
     Ok(Json(runs.into_iter().map(run_summary_dto).collect()))
@@ -848,9 +911,23 @@ async fn patch_run(
     State(state): State<ApiState>,
     Json(request): Json<PatchRunRequestDto>,
 ) -> Result<Json<RunSummaryDto>, ApiError> {
+    validate_text_field("license_plate", request.license_plate.as_deref(), 32)?;
+    validate_text_field("vehicle_name", request.vehicle_name.as_deref(), 128)?;
+    validate_text_field("customer_name", request.customer_name.as_deref(), 128)?;
+    validate_text_field("customer_phone", request.customer_phone.as_deref(), 32)?;
+    validate_text_field("notes", request.notes.as_deref(), 1024)?;
     let updated = state
         .storage
-        .update_run_metadata(run_id, request.vehicle_name, request.license_plate)
+        .update_run_metadata(
+            run_id,
+            PendingRunMetadata {
+                license_plate: request.license_plate,
+                vehicle_name: request.vehicle_name,
+                customer_name: request.customer_name,
+                customer_phone: request.customer_phone,
+                notes: request.notes,
+            },
+        )
         .await
         .map_err(ApiError::Internal)?
         .ok_or_else(|| ApiError::NotFound(format!("run {run_id} not found")))?;
@@ -1006,6 +1083,11 @@ fn run_summary_dto(run: StoredRun) -> RunSummaryDto {
         date: format_started_at_ms(run.started_at_ms),
         source_mode: run.source_mode.to_string(),
         correction_mode: run.correction_mode.to_string(),
+        display_id: run.display_id(),
+        run_no: run.run_no,
+        customer_name: run.customer_name.clone(),
+        customer_phone: run.customer_phone.clone(),
+        notes: run.notes.clone(),
         vehicle_name: run.vehicle_name,
         license_plate: run.license_plate,
         peak_power_hp: run.peak_power_hp,
@@ -1114,8 +1196,13 @@ fn run_detail_dto(run: StoredRun) -> RunDetailDto {
         date: format_started_at_ms(run.started_at_ms),
         source_mode: run.source_mode.to_string(),
         correction_mode: run.correction_mode.to_string(),
+        display_id: run.display_id(),
         calibration_profile_id: run.calibration_profile_id,
         calibration_profile_name: run.calibration_profile_name,
+        run_no: run.run_no,
+        customer_name: run.customer_name.clone(),
+        customer_phone: run.customer_phone.clone(),
+        notes: run.notes.clone(),
         vehicle_name: run.vehicle_name,
         license_plate: run.license_plate,
         roller_diameter_m: run.roller_diameter_m,

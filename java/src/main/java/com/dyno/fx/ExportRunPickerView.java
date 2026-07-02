@@ -88,9 +88,17 @@ public final class ExportRunPickerView extends Dialog<RunHistorySummaryDto> {
     }
 
     private void installColumns() {
-        TableColumn<RunHistorySummaryDto, Long> idCol =
-            new TableColumn<RunHistorySummaryDto, Long>(UiText.text("RUN ID"));
-        idCol.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, Long>("runId"));
+        TableColumn<RunHistorySummaryDto, String> idCol =
+            new TableColumn<RunHistorySummaryDto, String>(UiText.text("RUN ID"));
+        idCol.setCellValueFactory(cellData -> new javafx.beans.property.SimpleStringProperty(
+            com.dyno.presenter.RunLabels.displayId(cellData.getValue())));
+
+        TableColumn<RunHistorySummaryDto, String> customerCol =
+            new TableColumn<RunHistorySummaryDto, String>(UiText.text("CUSTOMER"));
+        customerCol.setCellValueFactory(cellData -> {
+            String c = cellData.getValue().getCustomerName();
+            return new javafx.beans.property.SimpleStringProperty(c != null ? c : "");
+        });
 
         TableColumn<RunHistorySummaryDto, String> dateCol =
             new TableColumn<RunHistorySummaryDto, String>(UiText.text("DATE"));
@@ -112,6 +120,6 @@ public final class ExportRunPickerView extends Dialog<RunHistorySummaryDto> {
             new TableColumn<RunHistorySummaryDto, Double>(UiText.text("PEAK NM"));
         tqCol.setCellValueFactory(new PropertyValueFactory<RunHistorySummaryDto, Double>("peakTorqueNm"));
 
-        table.getColumns().setAll(idCol, dateCol, srcCol, corrCol, pwrCol, tqCol);
+        table.getColumns().setAll(idCol, customerCol, dateCol, srcCol, corrCol, pwrCol, tqCol);
     }
 }

@@ -149,6 +149,10 @@ pub struct StoredRun {
     pub calibration_profile_name: Option<String>,
     pub vehicle_name: Option<String>,
     pub license_plate: Option<String>,
+    pub run_no: Option<i64>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub notes: Option<String>,
     pub roller_diameter_m: f32,
     pub encoder_pulses_per_rev: f32,
     pub roller_inertia_kg_m2: f32,
@@ -157,6 +161,17 @@ pub struct StoredRun {
     pub peak_power_rpm: f32,
     pub peak_torque_nm: f32,
     pub peak_torque_rpm: f32,
+}
+
+impl StoredRun {
+    /// Operator-facing run identifier: `{plate}-{run_no}` when both are
+    /// recorded, otherwise a `RUN-{run_id}` fallback.
+    pub fn display_id(&self) -> String {
+        match (&self.license_plate, self.run_no) {
+            (Some(plate), Some(run_no)) => format!("{plate}-{run_no}"),
+            _ => format!("RUN-{:05}", self.run_id),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -175,9 +190,21 @@ struct RecordingConfig {
     correction_mode: CorrectionMode,
 }
 
+/// Operator-entered metadata configured before a run starts; stamped onto the
+/// run row when the recorder opens it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PendingRunMetadata {
+    pub license_plate: Option<String>,
+    pub vehicle_name: Option<String>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub notes: Option<String>,
+}
+
 #[derive(Debug, Default)]
 struct RecorderState {
     active_run_id: Option<i64>,
+    pending_metadata: PendingRunMetadata,
     last_frame_ts_ms: Option<i64>,
     /// Rolling window of recent frames kept regardless of run state.
     /// Drained into DB at the moment a new run opens so the chart has context
@@ -192,7 +219,12 @@ enum Command {
     },
     ListRecentRuns {
         limit: usize,
+        search: Option<String>,
         reply: oneshot::Sender<anyhow::Result<Vec<StoredRun>>>,
+    },
+    SetPendingRunMetadata {
+        metadata: PendingRunMetadata,
+        reply: oneshot::Sender<anyhow::Result<()>>,
     },
     FetchRun {
         run_id: i64,
@@ -243,8 +275,7 @@ enum Command {
     },
     UpdateRunMetadata {
         run_id: i64,
-        vehicle_name: Option<String>,
-        license_plate: Option<String>,
+        metadata: PendingRunMetadata,
         reply: oneshot::Sender<anyhow::Result<Option<StoredRun>>>,
     },
     InsertAuditRecord {
@@ -314,10 +345,21 @@ impl Storage {
     }
 
     pub async fn list_recent_runs(&self, limit: usize) -> anyhow::Result<Vec<StoredRun>> {
+        self.search_recent_runs(None, limit).await
+    }
+
+    /// List recent runs, optionally filtered by a case-insensitive substring
+    /// match on license plate, customer name, or customer phone.
+    pub async fn search_recent_runs(
+        &self,
+        search: Option<String>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<StoredRun>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::ListRecentRuns {
                 limit,
+                search,
                 reply: reply_tx,
             })
             .await
@@ -489,15 +531,13 @@ impl Storage {
     pub async fn update_run_metadata(
         &self,
         run_id: i64,
-        vehicle_name: Option<String>,
-        license_plate: Option<String>,
+        metadata: PendingRunMetadata,
     ) -> anyhow::Result<Option<StoredRun>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::UpdateRunMetadata {
                 run_id,
-                vehicle_name,
-                license_plate,
+                metadata,
                 reply: reply_tx,
             })
             .await
@@ -505,6 +545,25 @@ impl Storage {
         reply_rx
             .await
             .context("storage worker dropped update-run-metadata reply")?
+    }
+
+    /// Stage operator-entered run metadata; it is stamped onto the next run
+    /// the recorder opens.
+    pub async fn set_pending_run_metadata(
+        &self,
+        metadata: PendingRunMetadata,
+    ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::SetPendingRunMetadata {
+                metadata,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped set-pending-run-metadata reply")?
     }
 
     pub async fn delete_run(&self, run_id: i64) -> anyhow::Result<bool> {
@@ -699,8 +758,12 @@ fn storage_worker(
                 let result = handle_live_frame(&mut conn, &recording, &mut state, &frame);
                 let _ = reply.send(result);
             }
-            Command::ListRecentRuns { limit, reply } => {
-                let _ = reply.send(query_recent_runs(&conn, limit));
+            Command::ListRecentRuns { limit, search, reply } => {
+                let _ = reply.send(query_recent_runs(&conn, search.as_deref(), limit));
+            }
+            Command::SetPendingRunMetadata { metadata, reply } => {
+                state.pending_metadata = metadata;
+                let _ = reply.send(Ok(()));
             }
             Command::FetchRun { run_id, reply } => {
                 let _ = reply.send(query_run(&conn, run_id));
@@ -761,11 +824,10 @@ fn storage_worker(
             }
             Command::UpdateRunMetadata {
                 run_id,
-                vehicle_name,
-                license_plate,
+                metadata,
                 reply,
             } => {
-                let _ = reply.send(db_update_run_metadata(&conn, run_id, vehicle_name, license_plate));
+                let _ = reply.send(db_update_run_metadata(&conn, run_id, &metadata));
             }
             Command::InsertAuditRecord {
                 event,
@@ -829,6 +891,36 @@ fn apply_storage_migrations(conn: &Connection) -> anyhow::Result<()> {
     ensure_column_exists(conn, "runs", "calibration_profile_name", "TEXT NULL")?;
     ensure_column_exists(conn, "runs", "vehicle_name", "TEXT NULL")?;
     ensure_column_exists(conn, "runs", "license_plate", "TEXT NULL")?;
+    let run_no_added = !table_has_column(conn, "runs", "run_no")?;
+    ensure_column_exists(conn, "runs", "run_no", "INTEGER NULL")?;
+    ensure_column_exists(conn, "runs", "customer_name", "TEXT NULL")?;
+    ensure_column_exists(conn, "runs", "customer_phone", "TEXT NULL")?;
+    ensure_column_exists(conn, "runs", "notes", "TEXT NULL")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runs_license_plate ON runs(license_plate)",
+        [],
+    )
+    .context("failed to create idx_runs_license_plate")?;
+    if run_no_added {
+        backfill_run_numbers(conn)?;
+    }
+    Ok(())
+}
+
+/// Assign per-plate sequence numbers to pre-existing runs, ordered by start time.
+fn backfill_run_numbers(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        r#"
+        UPDATE runs SET run_no = (
+            SELECT COUNT(*) FROM runs r2
+            WHERE r2.license_plate = runs.license_plate
+              AND (r2.started_at_ms < runs.started_at_ms
+                   OR (r2.started_at_ms = runs.started_at_ms AND r2.run_id <= runs.run_id))
+        )
+        WHERE license_plate IS NOT NULL;
+        "#,
+    )
+    .context("failed to backfill run_no")?;
     Ok(())
 }
 
@@ -1293,7 +1385,7 @@ fn handle_live_frame(
     let mut drained_at_start = false;
 
     if state.active_run_id.is_none() && frame.run_state == RunState::Recording {
-        let run_id = create_run(conn, recording)?;
+        let run_id = create_run(conn, recording, &state.pending_metadata)?;
         state.active_run_id = Some(run_id);
         debug!("storage: opened run {run_id} at {}", frame.ts_ms);
 
@@ -1317,7 +1409,7 @@ fn handle_live_frame(
                 }
             }
             RunState::Idle | RunState::Armed | RunState::Fault => {
-                close_run(conn, run_id, current_time_ms())?;
+                close_run(conn, run_id, frame.ts_ms)?;
                 debug!("storage: closed run {run_id} at {}", frame.ts_ms);
                 state.active_run_id = None;
                 state.last_frame_ts_ms = None;
@@ -1328,39 +1420,95 @@ fn handle_live_frame(
     Ok(())
 }
 
-fn create_run(conn: &Connection, recording: &RecordingConfig) -> anyhow::Result<i64> {
+fn create_run(
+    conn: &Connection,
+    recording: &RecordingConfig,
+    metadata: &PendingRunMetadata,
+) -> anyhow::Result<i64> {
     let calibration = fetch_active_calibration_profile(conn)?
         .ok_or_else(|| anyhow!("active calibration profile is missing"))?;
     let started_at_ms = current_time_ms();
-    conn.execute(
-        r#"
-        INSERT INTO runs (
-            started_at_ms,
-            ended_at_ms,
-            source_mode,
-            correction_mode,
-            calibration_profile_id,
-            calibration_profile_name,
-            roller_diameter_m,
-            encoder_pulses_per_rev,
-            roller_inertia_kg_m2,
-            sample_window_ms
-        ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-        "#,
-        params![
-            started_at_ms,
-            recording.source_mode.to_string(),
-            recording.correction_mode.to_string(),
-            calibration.profile_id,
-            calibration.name,
-            calibration.roller_diameter_m,
-            calibration.encoder_pulses_per_rev,
-            calibration.roller_inertia_kg_m2,
-            i64::try_from(calibration.sample_window_ms).context("sample_window_ms exceeds i64")?,
-        ],
-    )
-    .context("failed to insert run row")?;
-    Ok(conn.last_insert_rowid())
+    let license_plate = normalize_optional_text(metadata.license_plate.as_deref())
+        .map(|p| p.to_uppercase());
+    conn.execute("BEGIN IMMEDIATE", [])
+        .context("failed to begin run-insert transaction")?;
+    let insert_result = (|| -> anyhow::Result<i64> {
+        // Per-plate sequence number, allocated inside the same transaction so
+        // concurrent starts cannot produce duplicates.
+        let run_no: Option<i64> = match &license_plate {
+            Some(plate) => Some(
+                conn.query_row(
+                    "SELECT COALESCE(MAX(run_no), 0) + 1 FROM runs WHERE license_plate = ?1",
+                    params![plate],
+                    |row| row.get(0),
+                )
+                .context("failed to allocate run_no")?,
+            ),
+            None => None,
+        };
+        conn.execute(
+            r#"
+            INSERT INTO runs (
+                started_at_ms,
+                ended_at_ms,
+                source_mode,
+                correction_mode,
+                calibration_profile_id,
+                calibration_profile_name,
+                roller_diameter_m,
+                encoder_pulses_per_rev,
+                roller_inertia_kg_m2,
+                sample_window_ms,
+                vehicle_name,
+                license_plate,
+                run_no,
+                customer_name,
+                customer_phone,
+                notes
+            ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "#,
+            params![
+                started_at_ms,
+                recording.source_mode.to_string(),
+                recording.correction_mode.to_string(),
+                calibration.profile_id,
+                calibration.name,
+                calibration.roller_diameter_m,
+                calibration.encoder_pulses_per_rev,
+                calibration.roller_inertia_kg_m2,
+                i64::try_from(calibration.sample_window_ms).context("sample_window_ms exceeds i64")?,
+                normalize_optional_text(metadata.vehicle_name.as_deref()),
+                license_plate,
+                run_no,
+                normalize_optional_text(metadata.customer_name.as_deref()),
+                normalize_optional_text(metadata.customer_phone.as_deref()),
+                normalize_optional_text(metadata.notes.as_deref()),
+            ],
+        )
+        .context("failed to insert run row")?;
+        Ok(conn.last_insert_rowid())
+    })();
+    match insert_result {
+        Ok(run_id) => {
+            conn.execute("COMMIT", [])
+                .context("failed to commit run-insert transaction")?;
+            Ok(run_id)
+        }
+        Err(err) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(err)
+        }
+    }
+}
+
+/// Trim text and collapse empty/placeholder values to NULL.
+fn normalize_optional_text(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() || trimmed == "—" {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
 }
 
 fn append_frame(conn: &Connection, run_id: i64, frame: &LiveFrame) -> anyhow::Result<()> {
@@ -1413,7 +1561,11 @@ fn close_run(conn: &Connection, run_id: i64, ended_at_ms: i64) -> anyhow::Result
     Ok(())
 }
 
-fn query_recent_runs(conn: &Connection, limit: usize) -> anyhow::Result<Vec<StoredRun>> {
+fn query_recent_runs(
+    conn: &Connection,
+    search: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<Vec<StoredRun>> {
     let mut stmt = conn
         .prepare(
             r#"
@@ -1458,16 +1610,25 @@ fn query_recent_runs(conn: &Connection, limit: usize) -> anyhow::Result<Vec<Stor
                     LIMIT 1
                 ), 0.0) AS peak_torque_rpm,
                 r.vehicle_name,
-                r.license_plate
+                r.license_plate,
+                r.run_no,
+                r.customer_name,
+                r.customer_phone,
+                r.notes
             FROM runs r
-            ORDER BY r.started_at_ms DESC
-            LIMIT ?1
+            WHERE ?1 IS NULL
+               OR instr(upper(COALESCE(r.license_plate, '')), upper(?1)) > 0
+               OR instr(upper(COALESCE(r.customer_name, '')), upper(?1)) > 0
+               OR instr(upper(COALESCE(r.customer_phone, '')), upper(?1)) > 0
+            ORDER BY r.started_at_ms DESC, r.run_id DESC
+            LIMIT ?2
             "#,
         )
         .context("failed to prepare recent-runs query")?;
 
+    let search = search.map(str::trim).filter(|s| !s.is_empty());
     let rows = stmt
-        .query_map([limit as i64], map_stored_run_row)
+        .query_map(params![search, limit as i64], map_stored_run_row)
         .context("failed to execute recent-runs query")?;
 
     let mut runs = Vec::new();
@@ -1522,7 +1683,11 @@ fn query_run(conn: &Connection, run_id: i64) -> anyhow::Result<Option<StoredRun>
                     LIMIT 1
                 ), 0.0) AS peak_torque_rpm,
                 r.vehicle_name,
-                r.license_plate
+                r.license_plate,
+                r.run_no,
+                r.customer_name,
+                r.customer_phone,
+                r.notes
             FROM runs r
             WHERE r.run_id = ?1
             "#,
@@ -1556,6 +1721,10 @@ fn map_stored_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRun> {
         peak_torque_rpm: row.get(14)?,
         vehicle_name: row.get(15)?,
         license_plate: row.get(16)?,
+        run_no: row.get(17)?,
+        customer_name: row.get(18)?,
+        customer_phone: row.get(19)?,
+        notes: row.get(20)?,
     })
 }
 
@@ -1863,17 +2032,52 @@ fn parse_event_json(value: Option<String>) -> rusqlite::Result<Option<serde_json
 fn db_update_run_metadata(
     conn: &Connection,
     run_id: i64,
-    vehicle_name: Option<String>,
-    license_plate: Option<String>,
+    metadata: &PendingRunMetadata,
 ) -> anyhow::Result<Option<StoredRun>> {
-    let updated = conn.execute(
-        "UPDATE runs SET vehicle_name = ?1, license_plate = ?2 WHERE run_id = ?3",
-        params![vehicle_name.as_deref(), license_plate.as_deref(), run_id],
+    let Some(existing) = query_run(conn, run_id)? else {
+        return Ok(None);
+    };
+    let license_plate = normalize_optional_text(metadata.license_plate.as_deref())
+        .map(|p| p.to_uppercase());
+    // Reassign the per-plate sequence number when the plate changes so
+    // {plate}-{run_no} stays unique under the new plate.
+    let run_no: Option<i64> = if license_plate == existing.license_plate {
+        existing.run_no
+    } else {
+        match &license_plate {
+            Some(plate) => Some(
+                conn.query_row(
+                    "SELECT COALESCE(MAX(run_no), 0) + 1 FROM runs WHERE license_plate = ?1 AND run_id != ?2",
+                    params![plate, run_id],
+                    |row| row.get(0),
+                )
+                .context("failed to allocate run_no for updated plate")?,
+            ),
+            None => None,
+        }
+    };
+    conn.execute(
+        r#"
+        UPDATE runs SET
+            vehicle_name = ?1,
+            license_plate = ?2,
+            run_no = ?3,
+            customer_name = ?4,
+            customer_phone = ?5,
+            notes = ?6
+        WHERE run_id = ?7
+        "#,
+        params![
+            normalize_optional_text(metadata.vehicle_name.as_deref()),
+            license_plate,
+            run_no,
+            normalize_optional_text(metadata.customer_name.as_deref()),
+            normalize_optional_text(metadata.customer_phone.as_deref()),
+            normalize_optional_text(metadata.notes.as_deref()),
+            run_id,
+        ],
     )
     .with_context(|| format!("failed to update run metadata for run {run_id}"))?;
-    if updated == 0 {
-        return Ok(None);
-    }
     query_run(conn, run_id)
 }
 
@@ -2008,7 +2212,7 @@ fn db_set_setting(conn: &Connection, key: &str, value: &str) -> anyhow::Result<(
 fn stored_run_to_summary(run: StoredRun) -> RunSummary {
     RunSummary {
         run_id: run.run_id,
-        run_name: format!("RUN-{:05}", run.run_id),
+        run_name: run.display_id(),
         date: datetime_from_ms(run.started_at_ms).unwrap_or_else(|_| Utc::now()),
         peak_power_hp: run.peak_power_hp,
         peak_power_rpm: run.peak_power_rpm,
@@ -2052,7 +2256,8 @@ mod tests {
 
     fn test_db_path(label: &str) -> PathBuf {
         let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("dyno-core-{label}-{unique}.sqlite"))
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("dyno-core-{label}-{pid}-{unique}.sqlite"))
     }
 
     fn test_config(db_path: &Path) -> Config {
@@ -2107,6 +2312,179 @@ mod tests {
             faults: Vec::new(),
             alerts: Default::default(),
         }
+    }
+
+    async fn record_run(storage: &Storage, base_ts: i64) {
+        storage
+            .record_live_frame(frame(base_ts, RunState::Recording, 3000.0, Some(50.0), Some(120.0)))
+            .await
+            .expect("recording frame");
+        storage
+            .record_live_frame(frame(base_ts + 100, RunState::Idle, 900.0, None, None))
+            .await
+            .expect("closing frame");
+        storage.flush().await.expect("flush");
+    }
+
+    fn plate_metadata(plate: &str) -> PendingRunMetadata {
+        PendingRunMetadata {
+            license_plate: Some(plate.to_owned()),
+            vehicle_name: None,
+            customer_name: Some("Somchai".to_owned()),
+            customer_phone: Some("081-234-5678".to_owned()),
+            notes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_no_sequences_per_plate_and_display_id_formats() {
+        let db_path = test_db_path("run-no");
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+
+        storage.set_pending_run_metadata(plate_metadata(" abc 123 ")).await.expect("meta");
+        record_run(&storage, 1_000).await;
+        record_run(&storage, 10_000).await;
+        storage.set_pending_run_metadata(plate_metadata("XYZ 9")).await.expect("meta");
+        record_run(&storage, 20_000).await;
+
+        let runs = storage.list_recent_runs(10).await.expect("list");
+        assert_eq!(runs.len(), 3);
+        // Newest first.
+        assert_eq!(runs[0].display_id(), "XYZ 9-1");
+        assert_eq!(runs[1].display_id(), "ABC 123-2");
+        assert_eq!(runs[2].display_id(), "ABC 123-1");
+        assert_eq!(runs[0].customer_name.as_deref(), Some("Somchai"));
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn search_matches_plate_customer_and_phone() {
+        let db_path = test_db_path("search");
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+
+        storage.set_pending_run_metadata(plate_metadata("ABC 123")).await.expect("meta");
+        record_run(&storage, 1_000).await;
+        storage
+            .set_pending_run_metadata(PendingRunMetadata {
+                license_plate: Some("XYZ 9".to_owned()),
+                vehicle_name: None,
+                customer_name: Some("Malee".to_owned()),
+                customer_phone: Some("099-000-1111".to_owned()),
+                notes: None,
+            })
+            .await
+            .expect("meta");
+        record_run(&storage, 10_000).await;
+
+        let by_plate = storage.search_recent_runs(Some("abc".to_owned()), 10).await.expect("q");
+        assert_eq!(by_plate.len(), 1);
+        assert_eq!(by_plate[0].license_plate.as_deref(), Some("ABC 123"));
+
+        let by_customer = storage.search_recent_runs(Some("malee".to_owned()), 10).await.expect("q");
+        assert_eq!(by_customer.len(), 1);
+        assert_eq!(by_customer[0].license_plate.as_deref(), Some("XYZ 9"));
+
+        let by_phone = storage.search_recent_runs(Some("099-000".to_owned()), 10).await.expect("q");
+        assert_eq!(by_phone.len(), 1);
+
+        let no_match = storage.search_recent_runs(Some("nothing".to_owned()), 10).await.expect("q");
+        assert!(no_match.is_empty());
+
+        // Blank search behaves like no filter.
+        let blank = storage.search_recent_runs(Some("  ".to_owned()), 10).await.expect("q");
+        assert_eq!(blank.len(), 2);
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn run_no_backfill_numbers_existing_runs_per_plate() {
+        let db_path = test_db_path("backfill");
+        // Simulate a pre-migration database: runs with plates but no run_no column.
+        {
+            let conn = open_connection(&db_path).expect("open raw");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NULL,
+                    source_mode TEXT NOT NULL,
+                    correction_mode TEXT NOT NULL,
+                    roller_diameter_m REAL NOT NULL,
+                    encoder_pulses_per_rev REAL NOT NULL,
+                    roller_inertia_kg_m2 REAL NOT NULL,
+                    sample_window_ms INTEGER NOT NULL,
+                    vehicle_name TEXT NULL,
+                    license_plate TEXT NULL
+                );
+                INSERT INTO runs (started_at_ms, ended_at_ms, source_mode, correction_mode,
+                                  roller_diameter_m, encoder_pulses_per_rev, roller_inertia_kg_m2,
+                                  sample_window_ms, license_plate)
+                VALUES
+                    (1000, 2000, 'replay', 'SAEJ1349', 0.3, 60, 3.5, 100, 'AAA 1'),
+                    (3000, 4000, 'replay', 'SAEJ1349', 0.3, 60, 3.5, 100, 'BBB 2'),
+                    (5000, 6000, 'replay', 'SAEJ1349', 0.3, 60, 3.5, 100, 'AAA 1'),
+                    (7000, 8000, 'replay', 'SAEJ1349', 0.3, 60, 3.5, 100, NULL);
+                "#,
+            )
+            .expect("seed legacy runs");
+        }
+
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+        let runs = storage.list_recent_runs(10).await.expect("list");
+        let by_id: Vec<(Option<&str>, Option<i64>)> = runs
+            .iter()
+            .rev()
+            .map(|r| (r.license_plate.as_deref(), r.run_no))
+            .collect();
+        assert_eq!(
+            by_id,
+            vec![
+                (Some("AAA 1"), Some(1)),
+                (Some("BBB 2"), Some(1)),
+                (Some("AAA 1"), Some(2)),
+                (None, None),
+            ]
+        );
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn update_run_metadata_reassigns_run_no_on_plate_change() {
+        let db_path = test_db_path("meta-update");
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+
+        storage.set_pending_run_metadata(plate_metadata("OLD 1")).await.expect("meta");
+        record_run(&storage, 1_000).await;
+        let run_id = storage.list_recent_runs(1).await.expect("list")[0].run_id;
+
+        let updated = storage
+            .update_run_metadata(
+                run_id,
+                PendingRunMetadata {
+                    license_plate: Some("new 7".to_owned()),
+                    vehicle_name: Some("Civic".to_owned()),
+                    customer_name: Some("Anan".to_owned()),
+                    customer_phone: None,
+                    notes: Some("retune".to_owned()),
+                },
+            )
+            .await
+            .expect("update")
+            .expect("run exists");
+        assert_eq!(updated.display_id(), "NEW 7-1");
+        assert_eq!(updated.vehicle_name.as_deref(), Some("Civic"));
+        assert_eq!(updated.customer_name.as_deref(), Some("Anan"));
+        assert_eq!(updated.notes.as_deref(), Some("retune"));
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
     }
 
     #[tokio::test]

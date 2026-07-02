@@ -33,7 +33,16 @@ public final class HistoryApiClient {
     }
 
     public List<RunHistorySummaryDto> listRuns() throws IOException, InterruptedException {
-        HttpRequest request = requestBuilder("/api/runs")
+        return searchRuns(null);
+    }
+
+    /** Search runs by license plate, customer name, or customer phone substring. */
+    public List<RunHistorySummaryDto> searchRuns(String query) throws IOException, InterruptedException {
+        String path = "/api/runs";
+        if (query != null && !query.trim().isEmpty()) {
+            path += "?q=" + java.net.URLEncoder.encode(query.trim(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        HttpRequest request = requestBuilder(path)
             .GET()
             .build();
         return send(request, new TypeReference<List<RunHistorySummaryDto>>() { });

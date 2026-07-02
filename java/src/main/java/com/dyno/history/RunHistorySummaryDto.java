@@ -28,6 +28,21 @@ public final class RunHistorySummaryDto {
     @JsonProperty("license_plate")
     private String licensePlate;
 
+    @JsonProperty("run_no")
+    private Long runNo;
+
+    @JsonProperty("display_id")
+    private String displayId;
+
+    @JsonProperty("customer_name")
+    private String customerName;
+
+    @JsonProperty("customer_phone")
+    private String customerPhone;
+
+    @JsonProperty("notes")
+    private String notes;
+
     @JsonProperty("peak_power_hp")
     private Double peakPowerHp;
 
@@ -70,6 +85,26 @@ public final class RunHistorySummaryDto {
 
     public String getLicensePlate() {
         return licensePlate;
+    }
+
+    public Long getRunNo() {
+        return runNo;
+    }
+
+    public String getDisplayId() {
+        return displayId;
+    }
+
+    public String getCustomerName() {
+        return customerName;
+    }
+
+    public String getCustomerPhone() {
+        return customerPhone;
+    }
+
+    public String getNotes() {
+        return notes;
     }
 
     public Double getPeakPowerHp() {

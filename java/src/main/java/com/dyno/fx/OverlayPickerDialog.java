@@ -100,9 +100,10 @@ public final class OverlayPickerDialog extends Dialog<List<Long>> {
 
     @SuppressWarnings("unchecked")
     private void buildColumns() {
-        TableColumn<RunHistorySummaryDto, Long> idCol = new TableColumn<>(UiText.text("Run ID"));
-        idCol.setCellValueFactory(new PropertyValueFactory<>("runId"));
-        idCol.setPrefWidth(70);
+        TableColumn<RunHistorySummaryDto, String> idCol = new TableColumn<>(UiText.text("Run ID"));
+        idCol.setCellValueFactory(data -> new SimpleStringProperty(
+            com.dyno.presenter.RunLabels.displayId(data.getValue())));
+        idCol.setPrefWidth(110);
 
         TableColumn<RunHistorySummaryDto, String> dateCol = new TableColumn<>(UiText.text("Date"));
         dateCol.setCellValueFactory(new PropertyValueFactory<>("date"));

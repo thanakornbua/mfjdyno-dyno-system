@@ -177,7 +177,7 @@ public final class DynoPdfExporter {
         }
 
         // Chart
-        List<ChartSeriesModel> series = makeSingleRunSeries(detail.getRunId(), frames, 0);
+        List<ChartSeriesModel> series = makeSingleRunSeries(detail.getRunId(), runLabel(detail), frames, 0);
         doc.add(sectionTitle(LBL_CHART, font));
         doc.add(makeChartImage(pdfDoc, series, contentWidth(), 255f, font, scaleSettings));
         doc.add(vSpacer(12));
@@ -788,6 +788,7 @@ public final class DynoPdfExporter {
 
     private static List<ChartSeriesModel> makeSingleRunSeries(
         Long runId,
+        String label,
         List<RunHistoryFrameDto> frames,
         int colorIndex
     ) {
@@ -805,7 +806,6 @@ public final class DynoPdfExporter {
             }
         }
         int ci = colorIndex % POWER_HEX.length;
-        String label = runId != null ? String.format("RUN-%05d", runId.longValue()) : "RUN";
         List<ChartSeriesModel> out = new ArrayList<ChartSeriesModel>(2);
         if (!pwrPts.isEmpty()) {
             out.add(new ChartSeriesModel("pw-" + runId, label + " Power",  POWER_HEX[ci],  pwrPts));
@@ -823,7 +823,7 @@ public final class DynoPdfExporter {
             if (cr.getRun() == null) continue;
             List<RunHistoryFrameDto> frames = cr.getFrames() != null
                 ? cr.getFrames() : Collections.<RunHistoryFrameDto>emptyList();
-            all.addAll(makeSingleRunSeries(cr.getRun().getRunId(), frames, i));
+            all.addAll(makeSingleRunSeries(cr.getRun().getRunId(), runLabel(cr.getRun()), frames, i));
         }
         return all;
     }
@@ -974,6 +974,12 @@ public final class DynoPdfExporter {
         if (detail.getLicensePlate() != null && !detail.getLicensePlate().trim().isEmpty()) {
             parts.add("plate " + detail.getLicensePlate().trim());
         }
+        if (detail.getCustomerName() != null && !detail.getCustomerName().trim().isEmpty()) {
+            parts.add("customer " + detail.getCustomerName().trim());
+        }
+        if (detail.getCustomerPhone() != null && !detail.getCustomerPhone().trim().isEmpty()) {
+            parts.add("tel " + detail.getCustomerPhone().trim());
+        }
         if (detail.getSourceMode() != null && !detail.getSourceMode().trim().isEmpty()) {
             parts.add("source " + detail.getSourceMode().trim());
         }
@@ -1014,8 +1020,7 @@ public final class DynoPdfExporter {
     }
 
     private static String runLabel(RunHistoryDetailDto d) {
-        if (d == null || d.getRunId() == null) return "RUN";
-        return String.format("RUN-%05d", d.getRunId().longValue());
+        return com.dyno.presenter.RunLabels.displayId(d);
     }
 
     private static RunHistoryFrameDto firstFrame(List<RunHistoryFrameDto> frames) {
