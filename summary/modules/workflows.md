@@ -65,13 +65,14 @@ Path:
 2. UI calls `POST /api/run/configure`.
 3. UI calls `POST /api/run/start`.
 4. Backend `RunControl` marks the run configured/started.
-5. Fusion observes operator start intent and engine RPM thresholds.
-6. Fusion changes runtime state to `Armed`, `Recording`, or `Stopping`.
+5. Fusion observes operator start intent and the recording RPM threshold.
+6. Fusion changes runtime state to `Armed` below threshold or `Recording` at/above threshold.
 7. `StorageTask` watches live frames.
 8. Storage opens a run when recording starts.
-9. Storage appends frames during recording/stopping.
-10. Storage closes the run when an idle frame follows an active run.
-11. UI calls history APIs to list/fetch stored run data.
+9. Storage appends frames during `Recording`/legacy `Stopping`.
+10. If RPM dips back to `Armed`, storage pauses collection but keeps the active run open.
+11. Storage closes the run on operator stop (`Idle`) or `Fault`.
+12. UI calls history APIs to list/fetch stored run data.
 
 Key backend files:
 
@@ -91,8 +92,9 @@ Key frontend files:
 Important details:
 
 - `start()` means operator intent, not guaranteed physical recording.
-- Recording begins only when fusion sees the correct runtime conditions.
-- `stop()` records an idle frame when needed to force run closure.
+- Recording begins only when fusion sees engine RPM at/above `DYNO_RECORD_RPM`.
+- RPM below `DYNO_RECORD_RPM` pauses collection; it does not split or end the run.
+- `stop()` records and flushes an idle frame when needed to force run closure before the response returns.
 - Stored run peaks are calculated from stored frame data.
 
 ## Run History and Compare Workflow

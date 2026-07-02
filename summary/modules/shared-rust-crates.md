@@ -32,6 +32,7 @@ Modules:
 - `run_state.rs`
   - Defines `RunState`.
   - Expected states include `Idle`, `Armed`, `Recording`, `Stopping`, and fault-like states where applicable.
+  - `Stopping` remains serialized for compatibility/replay data; current fusion emits `Idle`, `Armed`, or `Recording` for normal operator-bounded runs.
   - Serialized names are consumed by Java UI logic, so renaming is a contract change.
 
 - `esp32_status.rs`

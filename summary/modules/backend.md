@@ -42,7 +42,8 @@ Important variables:
 - `DYNO_ESP32_APPLIED_CONFIG_PATH`: persisted last-applied ESP32 config state.
 - `DYNO_SOURCE_MODE`: `live`, `replay`, `sim`, or `simulation`.
 - `DYNO_CORRECTION_MODE`: correction model selector.
-- `DYNO_ARM_RPM`, `DYNO_RECORD_RPM`, `DYNO_STOP_RPM`: run state thresholds.
+- `DYNO_ARM_RPM`, `DYNO_RECORD_RPM`: run state/recording thresholds.
+- `DYNO_STOP_RPM`: deprecated compatibility setting; parsed but no longer stops runs.
 
 Engineering notes:
 
@@ -205,7 +206,7 @@ Fusion responsibilities:
 - Apply correction factor.
 - Map ESP32 signal/fault flags into `Esp32TelemetryStatus` and `FaultCode`.
 - Derive lambda/O2 alert levels.
-- Update run state based on operator start/stop plus RPM thresholds.
+- Update run state from operator start/stop intent plus the recording RPM threshold.
 
 Physics helper responsibilities:
 
@@ -272,9 +273,10 @@ Architecture:
 
 Recording behavior:
 
-- A run starts when a live frame enters a recording state.
-- Frames are appended while recording/stopping.
-- A run closes when an idle frame follows an active run.
+- A run row opens on the first `Recording` frame after operator start.
+- `Recording` and legacy `Stopping` frames are appended.
+- `Armed` frames during an active run are treated as a pause: they keep the run open but are not persisted.
+- `Idle` or `Fault` closes the active run. Operator stop records and flushes a synthetic idle frame before the API response returns.
 
 Query behavior:
 

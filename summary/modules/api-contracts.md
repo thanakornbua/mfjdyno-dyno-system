@@ -97,7 +97,7 @@ Owner:
 
 ## Run Control API
 
-Run control captures operator intent. It does not directly guarantee that a run is recording; fusion determines runtime recording from start intent plus RPM thresholds.
+Run control captures operator intent. It does not directly guarantee that a run is recording; fusion records only when start intent is active and RPM is at/above `DYNO_RECORD_RPM`. Below-threshold frames are reported as `Armed`/paused and do not end the operator-bounded run.
 
 ### `POST /api/run/configure`
 
@@ -143,7 +143,7 @@ Expected messages:
 
 ### `POST /api/run/stop`
 
-Stops operator intent. If a run was active, backend records an idle frame to help close the stored run.
+Stops operator intent. If a run was active, backend records and flushes an idle frame so the stored run is closed and queryable before the response returns.
 
 Expected messages:
 

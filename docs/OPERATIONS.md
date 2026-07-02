@@ -22,6 +22,8 @@
 - `DYNO_BME280_ENABLED`: `true` or `false`.
 - `DYNO_WS_BIND`: websocket bind address, usually `0.0.0.0:9000`.
 - `DYNO_API_BIND`: HTTP API bind address, usually `0.0.0.0:9001`.
+- `DYNO_RECORD_RPM`: engine RPM at or above which an operator-started run records frames.
+- `DYNO_STOP_RPM`: deprecated compatibility setting; parsed but no longer used to stop runs.
 - `RUST_LOG`: backend log level, usually `info`.
 
 ## Operator console environment
@@ -75,6 +77,14 @@ sudo systemctl enable --now dynod.service
 - A missing `/dev/i2c-1` is degraded, not fatal. Ambient reads fall back to stub values.
 - `GET /healthz` returns the cached startup check summary for quick operator inspection.
 - The operator console starts even if the backend is unavailable. The websocket client keeps reconnecting automatically, while history/calibration requests fail on demand until the backend returns.
+
+## Run lifecycle
+
+- Runs are operator-bounded: `POST /api/run/start` begins operator intent, and `POST /api/run/stop` ends the run.
+- Fusion emits `Recording` only while operator intent is started and engine RPM is at or above `DYNO_RECORD_RPM`.
+- When RPM dips below `DYNO_RECORD_RPM` during a started run, state returns to `Armed`/paused. Gauges and live telemetry continue to stream, but those paused frames are not persisted.
+- Storage keeps the active run open through paused `Armed` frames and appends again when RPM rises back to recording threshold.
+- `POST /api/run/stop` records a synthetic idle frame and flushes storage before returning, so the completed run is queryable when the response arrives.
 
 ## Live mode example
 

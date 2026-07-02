@@ -159,7 +159,7 @@ Run control:
 
 - `POST /api/run/configure`: configure current run metadata, currently license plate focused.
 - `POST /api/run/start`: start the current run.
-- `POST /api/run/stop`: stop the current run and record an idle frame when needed.
+- `POST /api/run/stop`: stop the current run and record/flush an idle frame when needed so history is immediately queryable.
 - `GET /api/run/status`: read run-control status.
 
 Development:
