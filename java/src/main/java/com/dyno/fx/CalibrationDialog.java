@@ -184,18 +184,18 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         statusLabel.setWrapText(true);
         statusLabel.setTextFill(FxTheme.TEXT_MUTED);
 
-        HBox actions = new HBox(8, createNewButton, saveButton, duplicateButton);
-        VBox box = new VBox(12, title, note, lockBar, activeBox, table, actions, formBox, auditBox, runtimeNoteLabel, statusLabel);
-        box.setPadding(new Insets(12));
+        HBox actions = new HBox(FxTheme.GAP_S, createNewButton, saveButton, duplicateButton);
+        VBox box = new VBox(FxTheme.GAP_M, title, note, lockBar, activeBox, table, actions, formBox, auditBox, runtimeNoteLabel, statusLabel);
+        box.setPadding(FxTheme.PAD_DIALOG);
         VBox.setVgrow(table, Priority.ALWAYS);
         return box;
     }
 
     private HBox buildLockBar() {
         lockStatusLabel.setStyle("-fx-font-size: 15px; -fx-font-weight: bold;");
-        HBox bar = new HBox(12, lockStatusLabel, lockButton, unlockButton);
+        HBox bar = new HBox(FxTheme.GAP_M, lockStatusLabel, lockButton, unlockButton);
         bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setPadding(new Insets(8, 10, 8, 10));
+        bar.setPadding(new Insets(FxTheme.GAP_S, FxTheme.GAP_M, FxTheme.GAP_S, FxTheme.GAP_M));
         bar.setStyle(FxTheme.cardStyle(FxTheme.SURFACE_ALT));
         return bar;
     }
@@ -210,8 +210,8 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         notesInput.setPrefRowCount(3);
 
         GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(10);
+        grid.setHgap(FxTheme.GAP_M);
+        grid.setVgap(FxTheme.GAP_M);
         grid.addRow(0, new Label(UiText.text("Profile name")), nameInput);
         grid.addRow(1, new Label(UiText.text("Roller diameter (m)")), rollerDiameterInput);
         grid.addRow(2, new Label(UiText.text("Pulses / rev")), pulsesPerRevInput);
@@ -253,7 +253,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         title.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
         title.setTextFill(FxTheme.TEXT_PRIMARY);
 
-        VBox box = new VBox(6);
+        VBox box = new VBox(FxTheme.GAP_S);
         box.getChildren().add(title);
         for (Node node : nodes) {
             if (node instanceof Label) {
@@ -261,7 +261,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             }
             box.getChildren().add(node);
         }
-        box.setPadding(new Insets(10));
+        box.setPadding(new Insets(FxTheme.GAP_M));
         box.setStyle(FxTheme.cardStyle(FxTheme.SURFACE_ALT));
         return box;
     }

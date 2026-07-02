@@ -123,7 +123,7 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         // recent runs preloaded into this dialog.
         searchField.setOnAction(event -> runServerSearch(searchField.getText()));
 
-        HBox actionRow = new HBox(8);
+        HBox actionRow = new HBox(FxTheme.GAP_S);
         actionRow.setAlignment(Pos.CENTER_LEFT);
 
         Button deleteButton = new Button(UiText.text("DELETE"));
@@ -141,8 +141,8 @@ public final class CompareSelectView extends Dialog<CompareSelectView.Result> {
         table.setMinWidth(900);
         table.setMinHeight(320);
 
-        VBox box = new VBox(10, title, note, searchField, actionRow, table);
-        box.setPadding(new Insets(12));
+        VBox box = new VBox(FxTheme.GAP_M, title, note, searchField, actionRow, table);
+        box.setPadding(FxTheme.PAD_DIALOG);
         return box;
     }
 

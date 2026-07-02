@@ -140,8 +140,8 @@ public final class OverlayPickerDialog extends Dialog<List<Long>> {
         statusLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #5577AA;");
         statusLabel.setWrapText(true);
 
-        VBox box = new VBox(8, title, hint, runTable, counterLabel, statusLabel);
-        box.setPadding(new Insets(14));
+        VBox box = new VBox(FxTheme.GAP_M, title, hint, runTable, counterLabel, statusLabel);
+        box.setPadding(FxTheme.PAD_DIALOG);
         box.setAlignment(Pos.TOP_LEFT);
         return box;
     }

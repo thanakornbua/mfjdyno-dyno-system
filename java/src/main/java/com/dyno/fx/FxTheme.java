@@ -1,9 +1,22 @@
 package com.dyno.fx;
 
 import com.dyno.presenter.OperatorViewModel;
+import javafx.geometry.Insets;
 import javafx.scene.paint.Color;
 
 public final class FxTheme {
+    // Spacing scale — use these instead of ad-hoc pixel values.
+    // Related items (label+value): GAP_XS/GAP_S; sibling cards: GAP_M;
+    // page sections: GAP_L/GAP_XL.
+    public static final double GAP_XS = 4;
+    public static final double GAP_S = 8;
+    public static final double GAP_M = 12;
+    public static final double GAP_L = 16;
+    public static final double GAP_XL = 24;
+    public static final Insets PAD_CARD = new Insets(GAP_L);
+    public static final Insets PAD_PAGE = new Insets(GAP_XL);
+    public static final Insets PAD_DIALOG = new Insets(GAP_L);
+
     public static final Color APP_BACKGROUND = Color.web("#000000");
     public static final Color SURFACE = Color.web("#0A0A0A");
     public static final Color SURFACE_ALT = Color.web("#111111");

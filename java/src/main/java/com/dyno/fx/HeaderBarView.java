@@ -63,7 +63,7 @@ public final class HeaderBarView extends VBox {
         Runnable onLanguageToggleRequested
     ) {
         setSpacing(12);
-        setPadding(new Insets(12, 18, 10, 18));
+        setPadding(new Insets(FxTheme.GAP_M, FxTheme.GAP_L, FxTheme.GAP_M, FxTheme.GAP_L));
         setStyle(
             "-fx-background-color: " + FxTheme.toCss(FxTheme.SURFACE) + ";" +
             "-fx-border-color: " + FxTheme.toCss(FxTheme.BORDER) + ";" +
@@ -99,9 +99,9 @@ public final class HeaderBarView extends VBox {
         backendStatusSecondary.setFont(Font.font("SansSerif", FontWeight.NORMAL, 13));
         backendStatusSecondary.setWrapText(true);
 
-        backendStatusRow = new HBox(8, backendStatusBadge, backendStatusPrimary);
+        backendStatusRow = new HBox(FxTheme.GAP_S, backendStatusBadge, backendStatusPrimary);
         backendStatusRow.setAlignment(Pos.CENTER_LEFT);
-        backendStatusBlock = new VBox(3, backendStatusTitle, backendStatusRow, backendStatusSecondary);
+        backendStatusBlock = new VBox(FxTheme.GAP_XS, backendStatusTitle, backendStatusRow, backendStatusSecondary);
         backendStatusBlock.setMaxWidth(300);
 
         connectionBadge = buildBadge(UiText.text("DISCONNECTED"));
@@ -117,9 +117,9 @@ public final class HeaderBarView extends VBox {
         auditLogButton = buildToolbarButton(UiText.text("AUDIT LOG"), onAuditLogRequested);
         languageButton = buildToolbarButton(UiText.languageButtonLabel(), onLanguageToggleRequested);
 
-        VBox titleBlock = new VBox(3, title, subtitle);
-        VBox runBlock = new VBox(3, runLabel, plateLabel);
-        topRightRow = new HBox(18, backendStatusBlock, runBlock);
+        VBox titleBlock = new VBox(FxTheme.GAP_XS, title, subtitle);
+        VBox runBlock = new VBox(FxTheme.GAP_XS, runLabel, plateLabel);
+        topRightRow = new HBox(FxTheme.GAP_L, backendStatusBlock, runBlock);
         topRightRow.setAlignment(Pos.CENTER_RIGHT);
 
         logoView = buildLogoView();
@@ -155,7 +155,7 @@ public final class HeaderBarView extends VBox {
         bannerPanel = new BorderPane();
         bannerPanel.setLeft(bannerTitle);
         bannerPanel.setCenter(bannerMessage);
-        bannerPanel.setPadding(new Insets(10, 12, 10, 12));
+        bannerPanel.setPadding(new Insets(FxTheme.GAP_M, FxTheme.GAP_M, FxTheme.GAP_M, FxTheme.GAP_M));
 
         getChildren().addAll(topRow, toolbarRow, bannerPanel);
         paintBadge(backendStatusBadge, OperatorViewModel.Tone.ALERT);

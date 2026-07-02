@@ -117,15 +117,15 @@ public final class ExportDialog extends Dialog<Void> {
         rpmStepSpinner.setPrefWidth(90);
         rpmStepSpinner.setEditable(true);
 
-        HBox controls = new HBox(10, rpmLabel, rpmStepSpinner,
+        HBox controls = new HBox(FxTheme.GAP_M, rpmLabel, rpmStepSpinner,
             exportPdfButton, exportCsvButton, repeatabilityButton);
         controls.setAlignment(Pos.CENTER_LEFT);
 
         statusLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #5577AA;");
         statusLabel.setWrapText(true);
 
-        VBox box = new VBox(10, title, hint, runTable, controls, statusLabel);
-        box.setPadding(new Insets(14));
+        VBox box = new VBox(FxTheme.GAP_M, title, hint, runTable, controls, statusLabel);
+        box.setPadding(FxTheme.PAD_DIALOG);
         VBox.setVgrow(runTable, Priority.ALWAYS);
         return box;
     }
@@ -312,8 +312,8 @@ public final class ExportDialog extends Dialog<Void> {
             ? report.getRunIds().toString() : "—"));
         runsLabel.setStyle("-fx-font-weight: bold;");
 
-        VBox content = new VBox(10, runsLabel, table);
-        content.setPadding(new Insets(14));
+        VBox content = new VBox(FxTheme.GAP_M, runsLabel, table);
+        content.setPadding(FxTheme.PAD_DIALOG);
 
         resultDialog.getDialogPane().setContent(content);
         resultDialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);

@@ -95,8 +95,8 @@ public final class PasswordGateDialog extends Dialog<Boolean> {
         changeLink.setStyle("-fx-font-size: 11px;");
         changeLink.setOnAction(e -> showChangePasswordDialog());
 
-        VBox box = new VBox(10, title, prompt, passwordField, errorLabel, changeLink);
-        box.setPadding(new Insets(14));
+        VBox box = new VBox(FxTheme.GAP_M, title, prompt, passwordField, errorLabel, changeLink);
+        box.setPadding(FxTheme.PAD_DIALOG);
         box.setAlignment(Pos.CENTER_LEFT);
         return box;
     }
@@ -134,13 +134,13 @@ public final class PasswordGateDialog extends Dialog<Boolean> {
         changeDialog.initModality(Modality.APPLICATION_MODAL);
         changeDialog.getDialogPane().getButtonTypes().addAll(confirmType, ButtonType.CANCEL);
 
-        VBox content = new VBox(8,
+        VBox content = new VBox(FxTheme.GAP_S,
             new Label(UiText.text("Current password:")), currentPwdField,
             new Label(UiText.text("New password:")), newPwdField,
             new Label(UiText.text("Confirm new password:")), confirmPwdField,
             changeErrorLabel
         );
-        content.setPadding(new Insets(12));
+        content.setPadding(FxTheme.PAD_DIALOG);
         content.setPrefWidth(300);
         changeDialog.getDialogPane().setContent(content);
 

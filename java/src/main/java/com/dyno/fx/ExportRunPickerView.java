@@ -82,8 +82,8 @@ public final class ExportRunPickerView extends Dialog<RunHistorySummaryDto> {
         table.setMinWidth(720);
         table.setMinHeight(300);
 
-        VBox box = new VBox(10, title, note, statusLabel, table);
-        box.setPadding(new Insets(12));
+        VBox box = new VBox(FxTheme.GAP_M, title, note, statusLabel, table);
+        box.setPadding(FxTheme.PAD_DIALOG);
         return box;
     }
 

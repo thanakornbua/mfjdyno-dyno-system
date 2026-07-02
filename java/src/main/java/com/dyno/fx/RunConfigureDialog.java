@@ -83,8 +83,8 @@ final class RunConfigureDialog {
         validation.setTextFill(Color.web("#FF6B6B"));
 
         GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(10);
+        grid.setHgap(FxTheme.GAP_M);
+        grid.setVgap(FxTheme.GAP_M);
         grid.addRow(0, new Label("License plate (required):"), plateInput);
         grid.addRow(1, new Label("Customer name:"), customerNameInput);
         grid.addRow(2, new Label("Customer phone:"), customerPhoneInput);
@@ -98,8 +98,8 @@ final class RunConfigureDialog {
         grid.addRow(10, new Label("Speed max / interval:"), pair(speedMaxInput, speedStepInput));
         grid.addRow(11, new Label("Grid max / interval:"), pair(gridMaxInput, gridStepInput));
 
-        VBox content = new VBox(10, grid, validation);
-        content.setPadding(new Insets(6, 0, 0, 0));
+        VBox content = new VBox(FxTheme.GAP_M, grid, validation);
+        content.setPadding(new Insets(FxTheme.GAP_S, 0, 0, 0));
         dialog.getDialogPane().setContent(content);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL, ButtonType.OK);
 
@@ -169,14 +169,14 @@ final class RunConfigureDialog {
         Spinner<Double> gridStepInput = scaleSpinner(seed.getValueInterval(), 5.0d, 200.0d, 5.0d);
 
         GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(10);
+        grid.setHgap(FxTheme.GAP_M);
+        grid.setVgap(FxTheme.GAP_M);
         grid.addRow(0, new Label("RPM max / interval:"), pair(rpmMaxInput, rpmStepInput));
         grid.addRow(1, new Label("AFR max / interval:"), pair(afrMaxInput, afrStepInput));
         grid.addRow(2, new Label("Speed max / interval:"), pair(speedMaxInput, speedStepInput));
         grid.addRow(3, new Label("Grid max / interval:"), pair(gridMaxInput, gridStepInput));
-        VBox content = new VBox(10, grid);
-        content.setPadding(new Insets(6, 0, 0, 0));
+        VBox content = new VBox(FxTheme.GAP_M, grid);
+        content.setPadding(new Insets(FxTheme.GAP_S, 0, 0, 0));
         dialog.getDialogPane().setContent(content);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL, ButtonType.OK);
         dialog.setResultConverter(button -> button == ButtonType.OK
@@ -233,7 +233,7 @@ final class RunConfigureDialog {
     }
 
     private static HBox pair(Spinner<Double> maxInput, Spinner<Double> intervalInput) {
-        HBox box = new HBox(8, maxInput, intervalInput);
+        HBox box = new HBox(FxTheme.GAP_S, maxInput, intervalInput);
         return box;
     }
 

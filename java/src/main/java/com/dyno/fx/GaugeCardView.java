@@ -17,7 +17,7 @@ final class GaugeCardView extends VBox {
 
     GaugeCardView() {
         setSpacing(4);
-        setPadding(new Insets(4, 4, 4, 4));
+        setPadding(new Insets(FxTheme.GAP_S));
         setStyle("-fx-background-color: transparent; -fx-border-color: transparent;");
 
         label.setTextFill(FxTheme.TEXT_SUBTLE);

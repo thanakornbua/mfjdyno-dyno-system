@@ -610,10 +610,10 @@ public final class LiveRunShellView extends BorderPane {
         headerBar.applyLayoutTier(tier);
         switch (tier) {
             case COMPACT: {
-                int gap = 6;
+                double gap = FxTheme.GAP_S;
                 mainBody.setSpacing(gap);
-                mainBody.setPadding(new Insets(8, 8, 6, 8));
-                chartDomain.setPadding(new Insets(8));
+                mainBody.setPadding(new Insets(FxTheme.GAP_S));
+                chartDomain.setPadding(new Insets(FxTheme.GAP_S));
                 leftRail.setMinWidth(300);
                 leftRail.setPrefWidth(330);
                 leftRail.setMaxWidth(370);
@@ -638,14 +638,14 @@ public final class LiveRunShellView extends BorderPane {
                 saeCfView.applySizing(30);
                 faultCountView.applySizing(30);
                 bottomBar.setSpacing(gap);
-                bottomBar.setPadding(new Insets(4, 8, 6, 8));
+                bottomBar.setPadding(new Insets(FxTheme.GAP_XS, FxTheme.GAP_S, FxTheme.GAP_S, FxTheme.GAP_S));
                 break;
             }
             case LARGE: {
-                int gap = 12;
+                double gap = FxTheme.GAP_L;
                 mainBody.setSpacing(gap);
-                mainBody.setPadding(new Insets(18, 18, 14, 18));
-                chartDomain.setPadding(new Insets(16));
+                mainBody.setPadding(new Insets(FxTheme.GAP_L));
+                chartDomain.setPadding(new Insets(FxTheme.GAP_L));
                 leftRail.setMinWidth(340);
                 leftRail.setPrefWidth(380);
                 leftRail.setMaxWidth(460);
@@ -670,15 +670,15 @@ public final class LiveRunShellView extends BorderPane {
                 saeCfView.applySizing(28);
                 faultCountView.applySizing(28);
                 bottomBar.setSpacing(gap);
-                bottomBar.setPadding(new Insets(10, 18, 14, 18));
+                bottomBar.setPadding(new Insets(FxTheme.GAP_M, FxTheme.GAP_L, FxTheme.GAP_L, FxTheme.GAP_L));
                 break;
             }
             case NORMAL:
             default: {
-                int gap = 8;
+                double gap = FxTheme.GAP_M;
                 mainBody.setSpacing(gap);
-                mainBody.setPadding(new Insets(10, 10, 8, 10));
-                chartDomain.setPadding(new Insets(12));
+                mainBody.setPadding(new Insets(FxTheme.GAP_M));
+                chartDomain.setPadding(new Insets(FxTheme.GAP_M));
                 leftRail.setMinWidth(300);
                 leftRail.setPrefWidth(330);
                 leftRail.setMaxWidth(390);
@@ -703,13 +703,13 @@ public final class LiveRunShellView extends BorderPane {
                 saeCfView.applySizing(23);
                 faultCountView.applySizing(23);
                 bottomBar.setSpacing(gap);
-                bottomBar.setPadding(new Insets(8, 10, 10, 10));
+                bottomBar.setPadding(new Insets(FxTheme.GAP_S, FxTheme.GAP_M, FxTheme.GAP_M, FxTheme.GAP_M));
                 break;
             }
         }
     }
 
-    private void applyRowGap(int gap) {
+    private void applyRowGap(double gap) {
         powerTorqueRow.setSpacing(gap);
         o2TempRow.setSpacing(gap);
         speedPressureRow.setSpacing(gap);
@@ -727,8 +727,8 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private HBox buildMainBody() {
-        HBox body = new HBox(16);
-        body.setPadding(new Insets(16));
+        HBox body = new HBox(FxTheme.GAP_L);
+        body.setPadding(new Insets(FxTheme.GAP_L));
         HBox.setHgrow(chartDomain, Priority.ALWAYS);
         chartDomain.setMaxWidth(Double.MAX_VALUE);
         body.getChildren().addAll(leftRail, chartDomain);
@@ -736,16 +736,16 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private VBox buildRunModePane() {
-        VBox pane = new VBox(14);
-        pane.setPadding(new Insets(20));
+        VBox pane = new VBox(FxTheme.GAP_L);
+        pane.setPadding(FxTheme.PAD_PAGE);
         pane.setStyle("-fx-background-color: " + FxTheme.toCss(FxTheme.APP_BACKGROUND) + ";");
 
-        VBox topRow = new VBox(10,
+        VBox topRow = new VBox(FxTheme.GAP_M,
             runModeMetricCard(UiText.text("ENGINE RPM"), runModeRpmValue),
             runModeMetricCard(UiText.text("SPEED"), runModeSpeedValue),
             runModeMetricCard(UiText.text("RUN STATE"), runModeStateValue)
         );
-        VBox powerRow = new VBox(10,
+        VBox powerRow = new VBox(FxTheme.GAP_M,
             runModeMetricCard(UiText.text("POWER"), runModePowerValue),
             runModeMetricCard(UiText.text("TORQUE"), runModeTorqueValue)
         );
@@ -755,7 +755,7 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private VBox buildLeftRail() {
-        VBox rail = new VBox(10);
+        VBox rail = new VBox(FxTheme.GAP_M);
         powerTorqueRow = buildTileRow(powerTile, torqueTile);
         o2TempRow = buildTileRow(o2Gauge, tempGauge);
         speedPressureRow = buildTileRow(speedView, pressureView);
@@ -778,8 +778,8 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private HBox buildChartDomain() {
-        HBox domain = new HBox(10);
-        domain.setPadding(new Insets(16));
+        HBox domain = new HBox(FxTheme.GAP_M);
+        domain.setPadding(FxTheme.PAD_CARD);
         domain.setStyle(FxTheme.cardStyle(FxTheme.SURFACE));
         HBox.setHgrow(chartArea, Priority.ALWAYS);
         chartArea.setMaxWidth(Double.MAX_VALUE);
@@ -789,7 +789,7 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private HBox buildTileRow(Region left, Region right) {
-        HBox row = new HBox(10);
+        HBox row = new HBox(FxTheme.GAP_M);
         HBox.setHgrow(left, Priority.ALWAYS);
         HBox.setHgrow(right, Priority.ALWAYS);
         left.setMaxWidth(Double.MAX_VALUE);
@@ -799,7 +799,7 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private VBox buildChartArea() {
-        VBox chart = new VBox(8);
+        VBox chart = new VBox(FxTheme.GAP_S);
         chart.setFillWidth(true);
 
         chartTitle.setTextFill(FxTheme.TEXT_SUBTLE);
@@ -814,21 +814,21 @@ public final class LiveRunShellView extends BorderPane {
         Region headerSpacer = new Region();
         HBox.setHgrow(headerSpacer, Priority.ALWAYS);
 
-        HBox overlayButtonRow = new HBox(6, overlayPickerButton, overlayIndicator);
+        HBox overlayButtonRow = new HBox(FxTheme.GAP_S, overlayPickerButton, overlayIndicator);
         overlayButtonRow.setAlignment(Pos.CENTER_LEFT);
-        VBox overlayControls = new VBox(4, overlayButtonRow, clearOverlaysButton);
+        VBox overlayControls = new VBox(FxTheme.GAP_XS, overlayButtonRow, clearOverlaysButton);
         overlayControls.setAlignment(Pos.TOP_RIGHT);
 
-        HBox headerRow = new HBox(12);
+        HBox headerRow = new HBox(FxTheme.GAP_M);
         headerRow.setAlignment(Pos.CENTER_LEFT);
         headerRow.getChildren().addAll(
-            new VBox(4, chartTitle, chartRunLabel),
+            new VBox(FxTheme.GAP_XS, chartTitle, chartRunLabel),
             headerSpacer,
             overlayControls
         );
 
-        VBox plotArea = new VBox(10);
-        plotArea.setPadding(new Insets(16));
+        VBox plotArea = new VBox(FxTheme.GAP_M);
+        plotArea.setPadding(FxTheme.PAD_CARD);
         plotArea.setStyle(
             "-fx-background-color: " + FxTheme.toCss(FxTheme.SURFACE_ALT) + ";" +
                 "-fx-background-radius: 10;" +
@@ -845,7 +845,7 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private VBox buildChartSidebar() {
-        VBox rail = new VBox(10);
+        VBox rail = new VBox(FxTheme.GAP_M);
         styleSidebarTitle(peakTitle);
         styleSidebarTitle(axisTitle);
         styleSidebarTitle(hooksTitle);
@@ -874,7 +874,7 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private HBox buildBottomBar() {
-        HBox bottom = new HBox(10);
+        HBox bottom = new HBox(FxTheme.GAP_M);
         bottom.setAlignment(Pos.CENTER_LEFT);
         bottom.setStyle(
             "-fx-background-color: " + FxTheme.toCss(FxTheme.APP_BACKGROUND) + ";" +
@@ -912,8 +912,8 @@ public final class LiveRunShellView extends BorderPane {
         Label heading = new Label(title);
         heading.setTextFill(FxTheme.TEXT_SUBTLE);
         heading.setFont(Font.font("SansSerif", FontWeight.BOLD, 20));
-        VBox box = new VBox(8, heading, value);
-        box.setPadding(new Insets(14));
+        VBox box = new VBox(FxTheme.GAP_S, heading, value);
+        box.setPadding(FxTheme.PAD_CARD);
         box.setStyle(FxTheme.cardStyle(FxTheme.SURFACE));
         return box;
     }
@@ -968,7 +968,7 @@ public final class LiveRunShellView extends BorderPane {
     }
 
     private VBox infoCard(Node... nodes) {
-        VBox card = new VBox(4);
+        VBox card = new VBox(FxTheme.GAP_XS);
         card.setPadding(new Insets(4, 4, 4, 4));
         card.setStyle("-fx-background-color: transparent; -fx-border-color: transparent;");
         for (int index = 0; index < nodes.length; index++) {
