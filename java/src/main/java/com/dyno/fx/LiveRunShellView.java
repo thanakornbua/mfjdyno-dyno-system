@@ -326,7 +326,7 @@ public final class LiveRunShellView extends BorderPane {
             + (dials != null && dials.getAfr() != null
                 ? String.format(java.util.Locale.US, "%.2f", dials.getAfr().doubleValue()) : "—"));
         runModeRunId.setText(controlState.runLabel());
-        renderRunStateBadge(machineState);
+        renderRunStateBadge(machineState, controlState);
 
         chartRunLabel.setText(UiText.text(chartModel.getRunLabel()));
         int overlayCount = chartModel.getOverlayRunCount();
@@ -449,8 +449,8 @@ public final class LiveRunShellView extends BorderPane {
         }
         if ("ARMED".equals(machineState)) {
             return new OperatorViewModel.BannerModel(
-                "ARMED",
-                "Waiting for run thresholds",
+                "PAUSED",
+                "Paused below recording threshold",
                 OperatorViewModel.Tone.CAUTION
             );
         }
@@ -471,6 +471,9 @@ public final class LiveRunShellView extends BorderPane {
         if ("RECORDING".equals(machineState)) {
             return "RUN ACTIVE";
         }
+        if ("ARMED".equals(machineState)) {
+            return "PAUSED (below threshold)";
+        }
         return "RUN STARTED";
     }
 
@@ -483,6 +486,9 @@ public final class LiveRunShellView extends BorderPane {
         }
         if ("RECORDING".equals(machineState)) {
             return OperatorViewModel.Tone.ACCENT;
+        }
+        if ("ARMED".equals(machineState)) {
+            return OperatorViewModel.Tone.CAUTION;
         }
         return OperatorViewModel.Tone.NORMAL;
     }
@@ -750,7 +756,7 @@ public final class LiveRunShellView extends BorderPane {
         runModeAfrValue.setFont(Font.font("Monospaced", FontWeight.BOLD, 34));
         runModeStateBadge.setFont(Font.font("SansSerif", FontWeight.BOLD, 22));
         runModeStateBadge.setPadding(new Insets(FxTheme.GAP_XS, FxTheme.GAP_L, FxTheme.GAP_XS, FxTheme.GAP_L));
-        renderRunStateBadge("IDLE");
+        renderRunStateBadge("IDLE", new RunControlUiState());
 
         HBox topStrip = new HBox(FxTheme.GAP_XL, runModeRunId, runModeStateBadge, runModeAfrValue);
         topStrip.setAlignment(javafx.geometry.Pos.CENTER);
@@ -769,11 +775,14 @@ public final class LiveRunShellView extends BorderPane {
         runModeRpmDial.setRange(0, rpmMax, rpmMax >= 8000 ? 1000 : 500);
     }
 
-    private void renderRunStateBadge(String machineState) {
+    private void renderRunStateBadge(String machineState, RunControlUiState controlState) {
         String state = machineState == null ? "—" : machineState;
-        runModeStateBadge.setText(UiText.text(state));
+        boolean paused = controlState != null && controlState.isStarted() && "ARMED".equals(state);
+        runModeStateBadge.setText(UiText.text(paused ? "PAUSED (below threshold)" : state));
         OperatorViewModel.Tone tone;
-        if ("RECORDING".equals(state)) {
+        if (paused) {
+            tone = OperatorViewModel.Tone.CAUTION;
+        } else if ("RECORDING".equals(state)) {
             tone = OperatorViewModel.Tone.NORMAL;
         } else if ("STOPPING".equals(state) || "ARMED".equals(state)) {
             tone = OperatorViewModel.Tone.CAUTION;

@@ -109,6 +109,8 @@ final class UiText {
         EXACT_THAI.put("RUN READY", "พร้อมเริ่มรัน");
         EXACT_THAI.put("RUN ACTIVE", "กำลังรัน");
         EXACT_THAI.put("RUN STARTED", "เริ่มรันแล้ว");
+        EXACT_THAI.put("PAUSED", "หยุดชั่วคราว");
+        EXACT_THAI.put("PAUSED (below threshold)", "หยุดชั่วคราว (ต่ำกว่าค่ากำหนด)");
         EXACT_THAI.put("LIVE TELEMETRY", "ค่าถ่ายทอดสด");
         EXACT_THAI.put("Live telemetry active (not saved)", "ค่าถ่ายทอดสดกำลังทำงาน (ยังไม่บันทึก)");
         EXACT_THAI.put("Enter license plate to configure a run", "กรอกป้ายทะเบียนเพื่อตั้งค่ารัน");
@@ -117,6 +119,8 @@ final class UiText {
         EXACT_THAI.put("RECORDING ACTIVE", "กำลังบันทึก");
         EXACT_THAI.put("ARMED", "เตรียมพร้อม");
         EXACT_THAI.put("Waiting for run thresholds", "กำลังรอค่ากำหนดเริ่มรัน");
+        EXACT_THAI.put("Paused below recording threshold", "หยุดชั่วคราวเพราะต่ำกว่าค่ากำหนดบันทึก");
+        EXACT_THAI.put("Run paused below threshold.", "รันหยุดชั่วคราวเพราะต่ำกว่าค่ากำหนด");
         EXACT_THAI.put("Run started — waiting for movement", "เริ่มรันแล้ว — กำลังรอการเคลื่อนที่");
         EXACT_THAI.put("Compare selection and print/export remain future chart-adjacent hooks.", "การเทียบและพิมพ์/ส่งออกจะเพิ่มในส่วนกราฟภายหลัง");
         EXACT_THAI.put("Previous-run comparison and timestamps will land here in a later step.", "ข้อมูลเทียบรอบก่อนและเวลา จะแสดงที่นี่ในขั้นถัดไป");

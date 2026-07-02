@@ -72,6 +72,37 @@ public final class LiveDynoChartPresenterTest {
     }
 
     @Test
+    public void armedPauseDoesNotResetCollectionBeforeRecordingResumes() throws Exception {
+        LiveTelemetryState telemetryState = new LiveTelemetryState();
+        LiveDynoChartPresenter presenter = new LiveDynoChartPresenter(telemetryState);
+
+        telemetryState.updateConnection(ConnectionPhase.CONNECTED, "Connected");
+        presenter.updateRunControl(true, true, "PAUSE-001", RunAxisSelection.defaults());
+
+        telemetryState.updateFrame(frame("RECORDING", 3000.0, 42.0, 110.0, 12.7, 10.0));
+        long firstToken = presenter.getViewModel().getDatasetToken();
+        telemetryState.updateFrame(frame("ARMED", 1800.0, 0.0, 0.0, 13.0, 10.1));
+
+        LiveDynoChartModel model = presenter.getViewModel();
+        assertEquals(firstToken, model.getDatasetToken());
+        assertFalse(model.isCollecting());
+        assertEquals("Run paused below threshold.", model.getStatusText());
+
+        telemetryState.updateFrame(frame("RECORDING", 3600.0, 65.0, 124.0, 12.8, 10.2));
+        model = presenter.getViewModel();
+        assertEquals(firstToken, model.getDatasetToken());
+        assertTrue(model.isCollecting());
+        assertEquals(2, model.getSeries().get(0).getPoints().size());
+        assertEquals(65.0, model.getSeries().get(0).getPoints().get(1).getY(), 0.0001);
+
+        telemetryState.updateFrame(frame("IDLE", 1600.0, 0.0, 0.0, 13.2, 10.3));
+        model = presenter.getViewModel();
+        assertFalse(model.isCollecting());
+        assertTrue(model.hasPlottedData());
+        assertEquals("Run complete. Chart frozen until the next run starts.", model.getStatusText());
+    }
+
+    @Test
     public void configuredAxesDriveChartSeriesAndTimeXAxis() throws Exception {
         LiveTelemetryState telemetryState = new LiveTelemetryState();
         LiveDynoChartPresenter presenter = new LiveDynoChartPresenter(telemetryState);

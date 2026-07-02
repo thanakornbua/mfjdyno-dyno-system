@@ -109,10 +109,19 @@ public final class LiveDynoChartPresenter {
         }
 
         FrameMessage frame = snapshot.getFrame();
-        if (!isRecording(frame)) {
-            if (recordingSeen) {
+        if (frame == null) {
+            return;
+        }
+        if (isRunEnding(frame)) {
+            if (recordingSeen || collectionOpen) {
                 collectionOpen = false;
             }
+            return;
+        }
+        if (isPaused(frame)) {
+            return;
+        }
+        if (!isRecording(frame)) {
             return;
         }
 
@@ -307,6 +316,9 @@ public final class LiveDynoChartPresenter {
         if (collectionOpen && !recordingSeen) {
             return "Run started. Waiting for recording to begin.";
         }
+        if (collectionOpen && isPaused(latestSnapshot.getFrame())) {
+            return "Run paused below threshold.";
+        }
         if (collectionOpen) {
             return "Collecting recording points.";
         }
@@ -321,7 +333,23 @@ public final class LiveDynoChartPresenter {
     }
 
     private boolean isRecording(FrameMessage frame) {
-        return frame != null && frame.getState() != null && "RECORDING".equals(frame.getState().trim().toUpperCase());
+        String state = normalizedState(frame);
+        return "RECORDING".equals(state) || "STOPPING".equals(state);
+    }
+
+    private boolean isPaused(FrameMessage frame) {
+        return "ARMED".equals(normalizedState(frame));
+    }
+
+    private boolean isRunEnding(FrameMessage frame) {
+        String state = normalizedState(frame);
+        return "IDLE".equals(state) || "FAULT".equals(state);
+    }
+
+    private String normalizedState(FrameMessage frame) {
+        return frame != null && frame.getState() != null
+            ? frame.getState().trim().toUpperCase()
+            : "";
     }
 
     private String normalizeRunLabel(boolean configured, String nextRunLabel) {

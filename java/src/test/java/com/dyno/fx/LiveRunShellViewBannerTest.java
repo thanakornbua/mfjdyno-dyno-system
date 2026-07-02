@@ -71,6 +71,22 @@ public final class LiveRunShellViewBannerTest {
         assertEquals(OperatorViewModel.Tone.ALERT, resolved.getTone());
     }
 
+    @Test
+    public void startedArmedRunShowsPausedBanner() throws Exception {
+        RunControlUiState controlState = new RunControlUiState();
+        controlState.applyResponse(successResponse(true, true, "RUN ABC-1", "ABC"), null);
+
+        OperatorViewModel.BannerModel resolved = LiveRunShellView.resolveBanner(
+            model("CONNECTED", "ARMED", banner("CONNECTED", "Ready", OperatorViewModel.Tone.NORMAL)),
+            backendStatus(OperatorStatusModel.OverallState.READY, "Backend ready", "Health checks passing"),
+            controlState
+        );
+
+        assertEquals("PAUSED", resolved.getTitle());
+        assertEquals("Paused below recording threshold", resolved.getMessage());
+        assertEquals(OperatorViewModel.Tone.CAUTION, resolved.getTone());
+    }
+
     private static OperatorStatusModel backendStatus(
         OperatorStatusModel.OverallState state,
         String primary,
@@ -143,5 +159,25 @@ public final class LiveRunShellViewBannerTest {
         OperatorViewModel.Tone tone
     ) {
         return new OperatorViewModel.BannerModel(title, message, tone);
+    }
+
+    private static com.dyno.control.RunControlResponse successResponse(
+        boolean configured,
+        boolean started,
+        String runLabel,
+        String licensePlate
+    ) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+            "{"
+                + "\"success\":true,"
+                + "\"message\":\"OK\","
+                + "\"configured\":" + configured + ","
+                + "\"started\":" + started + ","
+                + "\"recording\":false,"
+                + "\"run_label\":\"" + runLabel + "\","
+                + "\"license_plate\":\"" + licensePlate + "\""
+                + "}",
+            com.dyno.control.RunControlResponse.class
+        );
     }
 }

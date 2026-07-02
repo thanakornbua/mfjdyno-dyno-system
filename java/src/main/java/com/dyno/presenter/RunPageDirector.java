@@ -8,8 +8,8 @@ package com.dyno.presenter;
  * - Auto-ENTER the run page when the state transitions into RECORDING, but
  *   only when the operator actually started the run (replay mode cycles run
  *   states forever and must not bounce the UI).
- * - Auto-EXIT to the dashboard (graph) page when a running state
- *   (RECORDING/STOPPING) transitions to a terminal state (IDLE/ARMED/FAULT).
+ * - Auto-EXIT to the dashboard (graph) page when a run-page state
+ *   (RECORDING/STOPPING/ARMED) transitions to IDLE or FAULT.
  * - Repeated identical states and the first observed state are no-ops.
  */
 public final class RunPageDirector {
@@ -36,9 +36,10 @@ public final class RunPageDirector {
         if ("RECORDING".equals(state) && operatorStarted && currentPage != Page.RUN) {
             return Page.RUN;
         }
-        boolean wasRunning = "RECORDING".equals(previous) || "STOPPING".equals(previous);
-        boolean nowTerminal = "IDLE".equals(state) || "ARMED".equals(state) || "FAULT".equals(state);
-        if (wasRunning && nowTerminal && currentPage == Page.RUN) {
+        boolean wasRunPageState =
+            "RECORDING".equals(previous) || "STOPPING".equals(previous) || "ARMED".equals(previous);
+        boolean nowEnded = "IDLE".equals(state) || "FAULT".equals(state);
+        if (wasRunPageState && nowEnded && currentPage == Page.RUN) {
             return Page.DASHBOARD;
         }
         return null;

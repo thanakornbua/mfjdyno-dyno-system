@@ -31,6 +31,22 @@ public final class RunPageDirectorTest {
     }
 
     @Test
+    public void staysOnRunPageWhenRecordingDipsToArmed() {
+        RunPageDirector director = new RunPageDirector();
+        director.onState("RECORDING", true, Page.RUN);
+        assertNull(director.onState("ARMED", true, Page.RUN));
+        assertNull(director.onState("RECORDING", true, Page.RUN));
+    }
+
+    @Test
+    public void exitsAfterPausedRunStopsFromArmed() {
+        RunPageDirector director = new RunPageDirector();
+        director.onState("RECORDING", true, Page.RUN);
+        assertNull(director.onState("ARMED", true, Page.RUN));
+        assertEquals(Page.DASHBOARD, director.onState("IDLE", false, Page.RUN));
+    }
+
+    @Test
     public void exitsOnFaultToo() {
         RunPageDirector director = new RunPageDirector();
         director.onState("RECORDING", true, Page.RUN);
