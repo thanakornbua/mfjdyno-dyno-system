@@ -6,13 +6,13 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Tooltip;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
-import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
@@ -22,7 +22,7 @@ import java.io.InputStream;
 public final class HeaderBarView extends VBox {
     private static final String LOGO_RESOURCE = "/com/dyno/assets/logo.jpg";
 
-    private final StackPane topRow;
+    private final HBox topRow;
     private final HBox toolbarRow;
     private final HBox topRightRow;
     private final ImageView logoView;
@@ -38,6 +38,7 @@ public final class HeaderBarView extends VBox {
     private final VBox backendStatusBlock;
     private final Label connectionBadge;
     private final Label stateBadge;
+    private final Tooltip backendStatusTooltip;
     private final Button runModeButton;
     private final Button startButton;
     private final Button stopButton;
@@ -74,7 +75,7 @@ public final class HeaderBarView extends VBox {
         title.setTextFill(FxTheme.TEXT_PRIMARY);
         title.setFont(Font.font("SansSerif", FontWeight.BOLD, 26));
 
-        subtitle = new Label(UiText.text("Toolbar and operator status"));
+        subtitle = new Label(UiText.text("Live run control and telemetry"));
         subtitle.setTextFill(FxTheme.TEXT_MUTED);
         subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 15));
 
@@ -95,14 +96,15 @@ public final class HeaderBarView extends VBox {
         backendStatusPrimary.setTextFill(FxTheme.TEXT_PRIMARY);
         backendStatusPrimary.setFont(Font.font("SansSerif", FontWeight.BOLD, 15));
         backendStatusSecondary = new Label(UiText.text("Automatic status refresh active"));
-        backendStatusSecondary.setTextFill(FxTheme.TEXT_MUTED);
-        backendStatusSecondary.setFont(Font.font("SansSerif", FontWeight.NORMAL, 13));
-        backendStatusSecondary.setWrapText(true);
+        backendStatusSecondary.setManaged(false);
+        backendStatusSecondary.setVisible(false);
 
         backendStatusRow = new HBox(FxTheme.GAP_S, backendStatusBadge, backendStatusPrimary);
         backendStatusRow.setAlignment(Pos.CENTER_LEFT);
-        backendStatusBlock = new VBox(FxTheme.GAP_XS, backendStatusTitle, backendStatusRow, backendStatusSecondary);
-        backendStatusBlock.setMaxWidth(300);
+        backendStatusBlock = new VBox(FxTheme.GAP_XS, backendStatusTitle, backendStatusRow);
+        backendStatusBlock.setMaxWidth(260);
+        backendStatusTooltip = new Tooltip(UiText.text("Automatic status refresh active"));
+        Tooltip.install(backendStatusBlock, backendStatusTooltip);
 
         connectionBadge = buildBadge(UiText.text("DISCONNECTED"));
         stateBadge = buildBadge(UiText.text("RUN NOT CONFIGURED"));
@@ -118,15 +120,16 @@ public final class HeaderBarView extends VBox {
         languageButton = buildToolbarButton(UiText.languageButtonLabel(), onLanguageToggleRequested);
 
         VBox titleBlock = new VBox(FxTheme.GAP_XS, title, subtitle);
+        HBox brandBlock = new HBox(FxTheme.GAP_M, logoView = buildLogoView(), titleBlock);
+        brandBlock.setAlignment(Pos.CENTER_LEFT);
         VBox runBlock = new VBox(FxTheme.GAP_XS, runLabel, plateLabel);
-        topRightRow = new HBox(FxTheme.GAP_L, backendStatusBlock, runBlock);
+        topRightRow = new HBox(FxTheme.GAP_M, runBlock, stateBadge, connectionBadge, backendStatusBlock);
         topRightRow.setAlignment(Pos.CENTER_RIGHT);
 
-        logoView = buildLogoView();
-        topRow = new StackPane(titleBlock, logoView, topRightRow);
-        StackPane.setAlignment(titleBlock, Pos.CENTER_LEFT);
-        StackPane.setAlignment(logoView, Pos.CENTER);
-        StackPane.setAlignment(topRightRow, Pos.CENTER_RIGHT);
+        Region topSpacer = new Region();
+        HBox.setHgrow(topSpacer, Priority.ALWAYS);
+        topRow = new HBox(FxTheme.GAP_M, brandBlock, topSpacer, topRightRow);
+        topRow.setAlignment(Pos.CENTER_LEFT);
 
         Region toolbarSpacer = new Region();
         HBox.setHgrow(toolbarSpacer, Priority.ALWAYS);
@@ -141,9 +144,7 @@ public final class HeaderBarView extends VBox {
             calibrationButton,
             auditLogButton,
             languageButton,
-            toolbarSpacer,
-            connectionBadge,
-            stateBadge
+            toolbarSpacer
         );
         toolbarRow.setAlignment(Pos.CENTER_LEFT);
 
@@ -156,6 +157,8 @@ public final class HeaderBarView extends VBox {
         bannerPanel.setLeft(bannerTitle);
         bannerPanel.setCenter(bannerMessage);
         bannerPanel.setPadding(new Insets(FxTheme.GAP_M, FxTheme.GAP_M, FxTheme.GAP_M, FxTheme.GAP_M));
+        bannerPanel.managedProperty().bind(bannerPanel.visibleProperty());
+        bannerPanel.setVisible(false);
 
         getChildren().addAll(topRow, toolbarRow, bannerPanel);
         paintBadge(backendStatusBadge, OperatorViewModel.Tone.ALERT);
@@ -180,7 +183,7 @@ public final class HeaderBarView extends VBox {
         boolean calibrationEnabled
     ) {
         title.setText(UiText.text("Dyno Operator Console"));
-        subtitle.setText(UiText.text("Toolbar and operator status"));
+        subtitle.setText(UiText.text("Live run control and telemetry"));
         backendStatusTitle.setText(UiText.text("SYSTEM STATUS"));
         runModeButton.setText(UiText.text("RUN MODE"));
         startButton.setText(UiText.text("START"));
@@ -197,6 +200,7 @@ public final class HeaderBarView extends VBox {
         backendStatusBadge.setText(UiText.text(operatorStatus.getOverallLabel()));
         backendStatusPrimary.setText(UiText.text(operatorStatus.getPrimaryMessage()));
         backendStatusSecondary.setText(UiText.text(operatorStatus.getSecondaryMessage()));
+        backendStatusTooltip.setText(UiText.text(operatorStatus.getSecondaryMessage()));
 
         connectionBadge.setText(UiText.text(model.getConnectionText()));
         stateBadge.setText(UiText.text(runStateBadgeText));
@@ -207,6 +211,7 @@ public final class HeaderBarView extends VBox {
         bannerTitle.setText(UiText.text(banner.getTitle()));
         bannerMessage.setText(UiText.text(banner.getMessage()));
         applyBannerTone(banner.getTone());
+        bannerPanel.setVisible(isActionableBanner(banner));
 
         runModeButton.setDisable(!runModeEnabled);
         startButton.setDisable(!startEnabled);
@@ -225,14 +230,13 @@ public final class HeaderBarView extends VBox {
                 setPadding(new Insets(8, 10, 8, 10));
                 topRightRow.setSpacing(10);
                 toolbarRow.setSpacing(5);
-                logoView.setFitWidth(76);
-                logoView.setFitHeight(44);
+                logoView.setFitWidth(48);
+                logoView.setFitHeight(48);
                 title.setFont(Font.font("SansSerif", FontWeight.BOLD, 22));
                 subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
                 backendStatusTitle.setFont(Font.font("SansSerif", FontWeight.BOLD, 12));
                 backendStatusPrimary.setFont(Font.font("SansSerif", FontWeight.BOLD, 14));
-                backendStatusSecondary.setFont(Font.font("SansSerif", FontWeight.NORMAL, 12));
-                backendStatusBlock.setMaxWidth(240);
+                backendStatusBlock.setMaxWidth(220);
                 runLabel.setFont(Font.font("Monospaced", FontWeight.BOLD, 19));
                 plateLabel.setFont(Font.font("SansSerif", FontWeight.NORMAL, 13));
                 applyButtonFontSize(15);
@@ -242,14 +246,13 @@ public final class HeaderBarView extends VBox {
                 setPadding(new Insets(14, 22, 14, 22));
                 topRightRow.setSpacing(20);
                 toolbarRow.setSpacing(10);
-                logoView.setFitWidth(112);
-                logoView.setFitHeight(64);
+                logoView.setFitWidth(88);
+                logoView.setFitHeight(88);
                 title.setFont(Font.font("SansSerif", FontWeight.BOLD, 30));
                 subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 16));
                 backendStatusTitle.setFont(Font.font("SansSerif", FontWeight.BOLD, 14));
                 backendStatusPrimary.setFont(Font.font("SansSerif", FontWeight.BOLD, 16));
-                backendStatusSecondary.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
-                backendStatusBlock.setMaxWidth(340);
+                backendStatusBlock.setMaxWidth(300);
                 runLabel.setFont(Font.font("Monospaced", FontWeight.BOLD, 24));
                 plateLabel.setFont(Font.font("SansSerif", FontWeight.NORMAL, 15));
                 applyButtonFontSize(18);
@@ -260,14 +263,13 @@ public final class HeaderBarView extends VBox {
                 setPadding(new Insets(12, 18, 12, 18));
                 topRightRow.setSpacing(18);
                 toolbarRow.setSpacing(8);
-                logoView.setFitWidth(96);
-                logoView.setFitHeight(56);
+                logoView.setFitWidth(64);
+                logoView.setFitHeight(64);
                 title.setFont(Font.font("SansSerif", FontWeight.BOLD, 26));
                 subtitle.setFont(Font.font("SansSerif", FontWeight.NORMAL, 15));
                 backendStatusTitle.setFont(Font.font("SansSerif", FontWeight.BOLD, 13));
                 backendStatusPrimary.setFont(Font.font("SansSerif", FontWeight.BOLD, 15));
-                backendStatusSecondary.setFont(Font.font("SansSerif", FontWeight.NORMAL, 13));
-                backendStatusBlock.setMaxWidth(300);
+                backendStatusBlock.setMaxWidth(260);
                 runLabel.setFont(Font.font("Monospaced", FontWeight.BOLD, 22));
                 plateLabel.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
                 applyButtonFontSize(17);
@@ -292,8 +294,8 @@ public final class HeaderBarView extends VBox {
         ImageView view = new ImageView();
         view.setPreserveRatio(true);
         view.setSmooth(true);
-        view.setFitWidth(96);
-        view.setFitHeight(56);
+        view.setFitWidth(64);
+        view.setFitHeight(64);
         try (InputStream in = HeaderBarView.class.getResourceAsStream(LOGO_RESOURCE)) {
             if (in != null) {
                 view.setImage(new Image(in));
@@ -304,6 +306,15 @@ public final class HeaderBarView extends VBox {
         view.setVisible(view.getImage() != null);
         view.setManaged(view.getImage() != null);
         return view;
+    }
+
+    private boolean isActionableBanner(OperatorViewModel.BannerModel banner) {
+        if (banner == null || banner.getMessage() == null || banner.getMessage().trim().isEmpty()) {
+            return false;
+        }
+        return banner.getTone() == OperatorViewModel.Tone.ALERT
+            || banner.getTone() == OperatorViewModel.Tone.CAUTION
+            || banner.getTone() == OperatorViewModel.Tone.FAULT;
     }
 
     private Button buildToolbarButton(String text, Runnable action) {

@@ -171,7 +171,7 @@ public final class TelemetryPresenter {
             "RPM",
             formatNumber(rpm, WHOLE_NUMBER),
             "RPM",
-            "STATE " + state,
+            "",
             toneForPrimaryMetric(rpm)
         );
         OperatorViewModel.MetricTileModel afrTile = new OperatorViewModel.MetricTileModel(

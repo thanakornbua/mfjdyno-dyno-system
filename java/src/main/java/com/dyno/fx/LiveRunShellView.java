@@ -7,6 +7,7 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Label;
+import javafx.scene.control.Tooltip;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -95,15 +96,11 @@ public final class LiveRunShellView extends BorderPane {
     private final Label peakTorqueLabel = new Label(UiText.text("Peak torque: —"));
     private final Label axisTitle = new Label(UiText.text("SELECTED AXES"));
     private final Label runConfigSummary = new Label(UiText.text("X: Engine RPM | Y1: Power | Y2: Torque | Y3: AFR"));
-    private final Label runConfigHint = new Label(UiText.text("Run/chart configuration stays tied to run setup and chart context."));
     private final javafx.scene.control.Button overlayPickerButton =
         new javafx.scene.control.Button(UiText.text("OVERLAY RUNS"));
     private final javafx.scene.control.Button clearOverlaysButton =
         new javafx.scene.control.Button(UiText.text("CLEAR OVERLAYS"));
     private final Label overlayIndicator = new Label();
-
-    private final Label hooksTitle = new Label(UiText.text("COMPARE / PRINT"));
-    private final Label hooksHint = new Label(UiText.text("Compare selection and print/export remain future chart-adjacent hooks."));
 
     // Bottom summary band.
     private final Label currentRunTitle = new Label(UiText.text("CURRENT RUN"));
@@ -609,9 +606,6 @@ public final class LiveRunShellView extends BorderPane {
         chartContextTitle.setText(UiText.text("CHART CONTEXT"));
         peakTitle.setText(UiText.text("PEAK VALUES"));
         axisTitle.setText(UiText.text("SELECTED AXES"));
-        runConfigHint.setText(UiText.text("Run/chart configuration stays tied to run setup and chart context."));
-        hooksTitle.setText(UiText.text("COMPARE / PRINT"));
-        hooksHint.setText(UiText.text("Compare selection and print/export remain future chart-adjacent hooks."));
         currentRunTitle.setText(UiText.text("CURRENT RUN"));
         compareSummaryTitle.setText(UiText.text("COMPARE SUMMARY"));
         operatorStatusTitle.setText(UiText.text("OPERATOR STATUS"));
@@ -888,7 +882,6 @@ public final class LiveRunShellView extends BorderPane {
         VBox rail = new VBox(FxTheme.GAP_M);
         styleSidebarTitle(peakTitle);
         styleSidebarTitle(axisTitle);
-        styleSidebarTitle(hooksTitle);
 
         styleSidebarPrimary(peakPowerLabel);
         styleSidebarPrimary(peakTorqueLabel);
@@ -896,18 +889,15 @@ public final class LiveRunShellView extends BorderPane {
         runConfigSummary.setWrapText(true);
         runConfigSummary.setTextFill(FxTheme.TEXT_PRIMARY);
         runConfigSummary.setFont(Font.font("SansSerif", FontWeight.BOLD, 15));
-        runConfigHint.setWrapText(true);
-        runConfigHint.setTextFill(FxTheme.TEXT_MUTED);
-        runConfigHint.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
-        hooksHint.setWrapText(true);
-        hooksHint.setTextFill(FxTheme.TEXT_MUTED);
-        hooksHint.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
+        Tooltip.install(
+            runConfigSummary,
+            new Tooltip(UiText.text("Run/chart configuration stays tied to run setup and chart context."))
+        );
 
         rail.getChildren().addAll(
             chartContextTitle,
             infoCard(peakTitle, peakPowerLabel, peakTorqueLabel),
-            infoCard(axisTitle, runConfigSummary, runConfigHint),
-            infoCard(hooksTitle, hooksHint),
+            infoCard(axisTitle, runConfigSummary),
             verticalSpacer()
         );
         return rail;
