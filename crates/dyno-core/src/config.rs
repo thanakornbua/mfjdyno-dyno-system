@@ -113,7 +113,8 @@ pub struct Config {
     pub arm_rpm: f32,
     /// Engine RPM above which the state machine transitions Armed → Recording.
     pub record_rpm: f32,
-    /// Engine RPM below which the state machine transitions Recording → Stopping.
+    /// Deprecated/no-op compatibility setting. Runs are operator-bounded now;
+    /// RPM below `record_rpm` pauses collection instead of stopping the run.
     pub stop_rpm: f32,
 }
 

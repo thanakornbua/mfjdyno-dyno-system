@@ -206,6 +206,9 @@ struct RecorderState {
     active_run_id: Option<i64>,
     pending_metadata: PendingRunMetadata,
     last_frame_ts_ms: Option<i64>,
+    /// Set after a synthetic operator-stop idle frame closes a run so stale
+    /// in-flight Recording frames cannot immediately open a second run.
+    open_blocked_until_non_recording: bool,
     /// Rolling window of recent frames kept regardless of run state.
     /// Drained into DB at the moment a new run opens so the chart has context
     /// before the official recording start.
@@ -1379,18 +1382,31 @@ fn handle_live_frame(
     state: &mut RecorderState,
     frame: &LiveFrame,
 ) -> anyhow::Result<()> {
+    let blocked_stale_recording = state.active_run_id.is_none()
+        && state.open_blocked_until_non_recording
+        && frame.run_state == RunState::Recording;
+
     // Feed the pre-run ring buffer with every frame regardless of run state.
     // The oldest entry is dropped when the buffer exceeds its fixed capacity.
-    state.pre_run_buffer.push_back(frame.clone());
-    if state.pre_run_buffer.len() > PRE_RUN_BUFFER_CAP {
-        state.pre_run_buffer.pop_front();
+    if !blocked_stale_recording {
+        state.pre_run_buffer.push_back(frame.clone());
+        if state.pre_run_buffer.len() > PRE_RUN_BUFFER_CAP {
+            state.pre_run_buffer.pop_front();
+        }
+    }
+
+    if state.active_run_id.is_none() && frame.run_state != RunState::Recording {
+        state.open_blocked_until_non_recording = false;
     }
 
     // Track whether the current frame was already written as part of the
     // pre-run drain so we do not double-insert it via the normal append path.
     let mut drained_at_start = false;
 
-    if state.active_run_id.is_none() && frame.run_state == RunState::Recording {
+    if state.active_run_id.is_none()
+        && frame.run_state == RunState::Recording
+        && !state.open_blocked_until_non_recording
+    {
         let run_id = create_run(conn, recording, &state.pending_metadata)?;
         state.active_run_id = Some(run_id);
         debug!("storage: opened run {run_id} at {}", frame.ts_ms);
@@ -1414,16 +1430,27 @@ fn handle_live_frame(
                     state.last_frame_ts_ms = Some(frame.ts_ms);
                 }
             }
-            RunState::Idle | RunState::Armed | RunState::Fault => {
+            RunState::Armed => {}
+            RunState::Idle | RunState::Fault => {
+                let block_stale_recording = is_synthetic_idle_frame(frame);
                 close_run(conn, run_id, frame.ts_ms)?;
                 debug!("storage: closed run {run_id} at {}", frame.ts_ms);
                 state.active_run_id = None;
                 state.last_frame_ts_ms = None;
+                state.open_blocked_until_non_recording = block_stale_recording;
+                state.pre_run_buffer.clear();
             }
         }
     }
 
     Ok(())
+}
+
+fn is_synthetic_idle_frame(frame: &LiveFrame) -> bool {
+    frame.run_state == RunState::Idle
+        && frame.engine_rpm.is_none()
+        && frame.roller_rpm.is_none()
+        && frame.speed_kmh.is_none()
 }
 
 fn create_run(
@@ -2765,11 +2792,15 @@ mod tests {
             .await
             .expect("second recording frame");
         storage
-            .record_live_frame(frame(1200, RunState::Stopping, 2500.0, Some(30.0), Some(90.0)))
+            .record_live_frame(frame(1200, RunState::Armed, 1500.0, None, None))
             .await
-            .expect("stopping frame");
+            .expect("paused armed frame");
         storage
-            .record_live_frame(frame(1300, RunState::Idle, 1000.0, None, None))
+            .record_live_frame(frame(1300, RunState::Recording, 3900.0, Some(70.0), Some(120.0)))
+            .await
+            .expect("recording resumes");
+        storage
+            .record_live_frame(frame(1400, RunState::Idle, 1000.0, None, None))
             .await
             .expect("closing idle frame");
         storage.flush().await.expect("flush");
@@ -2784,13 +2815,15 @@ mod tests {
         assert_eq!(run.calibration_profile_name.as_deref(), Some("Default bootstrap profile"));
 
         let frames = storage.fetch_frames(run.run_id).await.expect("fetch frames");
-        // The Idle frame at ts_ms=900 is included as a pre-run context frame.
+        // The Idle frame at ts_ms=900 is included as pre-run context; the
+        // mid-run Armed pause is not persisted and does not close the run.
         assert_eq!(frames.len(), 4);
         assert_eq!(frames[0].ts_ms, 900);
         assert_eq!(frames[0].run_state, RunState::Idle);
         assert_eq!(frames[1].run_state, RunState::Recording);
         assert_eq!(frames[2].run_state, RunState::Recording);
-        assert_eq!(frames[3].run_state, RunState::Stopping);
+        assert_eq!(frames[3].ts_ms, 1300);
+        assert_eq!(frames[3].run_state, RunState::Recording);
 
         let conn = Connection::open(&db_path).expect("open db for run inspection");
         let ended_at_ms: Option<i64> = conn
@@ -2800,7 +2833,36 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("query ended_at_ms");
-        assert_eq!(ended_at_ms, Some(1300));
+        assert_eq!(ended_at_ms, Some(1400));
+
+        drop(storage);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn stop_idle_close_drops_stale_recording_without_new_run() {
+        let db_path = test_db_path("stop-stale-recording");
+        let storage = Storage::open(&test_config(&db_path)).await.expect("open storage");
+
+        storage
+            .record_live_frame(frame(1000, RunState::Recording, 3000.0, Some(60.0), Some(120.0)))
+            .await
+            .expect("recording frame");
+        storage
+            .record_live_frame(LiveFrame::idle(2000))
+            .await
+            .expect("operator stop idle frame");
+        storage
+            .record_live_frame(frame(1500, RunState::Recording, 3200.0, Some(62.0), Some(122.0)))
+            .await
+            .expect("stale recording frame");
+        storage.flush().await.expect("flush");
+
+        let runs = storage.list_recent_runs(10).await.expect("list runs");
+        assert_eq!(runs.len(), 1);
+        let frames = storage.fetch_frames(runs[0].run_id).await.expect("fetch frames");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].ts_ms, 1000);
 
         drop(storage);
         let _ = fs::remove_file(db_path);

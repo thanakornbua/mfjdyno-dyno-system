@@ -50,9 +50,7 @@ impl FusionPhysicsConfig {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunThresholds {
-    arm_rpm: f32,
     record_rpm: f32,
-    stop_rpm: f32,
 }
 
 /// Converts the latest ESP32 frame into a frontend-ready `LiveFrame`.
@@ -77,9 +75,9 @@ impl FusionTask {
         correction_mode: CorrectionMode,
         calibration_rx: watch::Receiver<CalibrationProfile>,
         run_control: RunControl,
-        arm_rpm: f32,
+        _arm_rpm: f32,
         record_rpm: f32,
-        stop_rpm: f32,
+        _stop_rpm: f32,
     ) -> Self {
         let task = Self {
             frame_rx,
@@ -90,9 +88,7 @@ impl FusionTask {
             calibration_rx,
             run_control,
             run_thresholds: RunThresholds {
-                arm_rpm,
                 record_rpm,
-                stop_rpm,
             },
         };
 
@@ -150,7 +146,6 @@ async fn fusion_task_loop(
                 };
                 let run_state = next_run_state(
                     runtime_state.started,
-                    runtime_state.recording,
                     runtime_engine_rpm,
                     run_thresholds,
                 );
@@ -333,7 +328,6 @@ fn fuse_frame(
 
 fn next_run_state(
     started: bool,
-    was_recording: bool,
     engine_rpm: Option<f32>,
     thresholds: RunThresholds,
 ) -> RunState {
@@ -342,19 +336,8 @@ fn next_run_state(
     }
 
     let rpm = engine_rpm.unwrap_or(0.0);
-    if was_recording {
-        if rpm <= thresholds.stop_rpm {
-            return RunState::Stopping;
-        }
-        return RunState::Recording;
-    }
-
     if rpm >= thresholds.record_rpm {
         return RunState::Recording;
-    }
-
-    if rpm >= thresholds.arm_rpm {
-        return RunState::Armed;
     }
 
     RunState::Armed
@@ -464,6 +447,10 @@ fn o2_alert_from_afr(afr: Option<f32>) -> AlertLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn thresholds() -> RunThresholds {
+        RunThresholds { record_rpm: 2_000.0 }
+    }
+
     fn sample_frame() -> DynoFrameV1 {
         DynoFrameV1 {
             magic: dyno_protocol::MAGIC,
@@ -566,5 +553,28 @@ mod tests {
         assert!(faults.contains(&FaultCode::CanInvalid));
         assert!(faults.contains(&FaultCode::Overflow));
         assert!(faults.contains(&FaultCode::Unknown));
+    }
+
+    #[test]
+    fn next_run_state_returns_idle_when_not_started_even_above_record_rpm() {
+        assert_eq!(next_run_state(false, Some(4_000.0), thresholds()), RunState::Idle);
+    }
+
+    #[test]
+    fn next_run_state_records_only_at_or_above_record_rpm() {
+        assert_eq!(next_run_state(true, Some(1_999.0), thresholds()), RunState::Armed);
+        assert_eq!(next_run_state(true, Some(2_000.0), thresholds()), RunState::Recording);
+    }
+
+    #[test]
+    fn next_run_state_dip_while_recording_returns_armed_not_stopping() {
+        assert_eq!(next_run_state(true, Some(900.0), thresholds()), RunState::Armed);
+    }
+
+    #[test]
+    fn next_run_state_never_emits_stopping() {
+        for rpm in [None, Some(0.0), Some(999.0), Some(1_999.0), Some(2_000.0), Some(8_000.0)] {
+            assert_ne!(next_run_state(true, rpm, thresholds()), RunState::Stopping);
+        }
     }
 }

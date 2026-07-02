@@ -3,19 +3,18 @@
 //! # Responsibilities (to be implemented)
 //!
 //! * Own the authoritative `RunState` and transition it based on:
-//!   - engine RPM thresholds (`Config::arm_rpm`, `record_rpm`, `stop_rpm`)
-//!   - explicit operator commands (arm, abort)
+//!   - operator start/stop intent
+//!   - engine RPM collection threshold (`Config::record_rpm`)
 //!   - fault injection from any subsystem
 //! * Emit state-change events so fusion and storage can react.
-//! * Guard against illegal transitions (e.g., Recording → Armed without
-//!   passing through Stopping).
+//! * Guard against illegal transitions.
 //!
 //! # State diagram
 //!
 //! ```text
-//! Idle ──[rpm > arm_rpm]──► Armed ──[rpm > record_rpm]──► Recording
-//!   ▲                                                          │
-//!   └──[run saved]── Stopping ◄──[rpm < stop_rpm]────────────┘
+//! Idle ──[operator start]──► Armed ──[rpm >= record_rpm]──► Recording
+//!   ▲                         ▲                               │
+//!   └──────[operator stop]────┴────[rpm < record_rpm]─────────┘
 //!
 //! Any state ──[fault]──► Fault ──[operator ack]──► Idle
 //! ```

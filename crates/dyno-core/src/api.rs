@@ -499,6 +499,7 @@ async fn stop_run(State(state): State<ApiState>) -> Result<Json<RunControlRespon
             .record_live_frame(LiveFrame::idle(current_time_ms()))
             .await
             .map_err(ApiError::Internal)?;
+        state.storage.flush().await.map_err(ApiError::Internal)?;
     }
 
     let message = if previous.recording || previous.started {
@@ -1688,7 +1689,6 @@ mod tests {
             .await
             .expect("stop response");
         assert_eq!(stop_response.status(), StatusCode::OK);
-        storage.flush().await.expect("flush storage");
 
         let runs_response = app
             .oneshot(Request::builder().uri("/api/runs").body(Body::empty()).unwrap())
