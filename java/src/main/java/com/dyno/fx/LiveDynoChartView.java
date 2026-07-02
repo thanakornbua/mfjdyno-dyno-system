@@ -1,5 +1,6 @@
 package com.dyno.fx;
 
+import com.dyno.presenter.ChartCursorLocator;
 import com.dyno.presenter.ChartPlotPoint;
 import com.dyno.presenter.ChartScaleSettings;
 import com.dyno.presenter.ChartSeriesModel;
@@ -12,7 +13,10 @@ import javafx.collections.ObservableList;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.XYChart;
+import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.shape.Line;
 import javafx.util.Duration;
 
 import java.util.ArrayList;
@@ -44,6 +48,15 @@ public final class LiveDynoChartView extends StackPane {
     private String seriesSignature = "";
     private String overlaySignature = "";
     private String currentXAxisLabel = "Engine RPM";
+
+    // Cursor overlay (crosshair + per-series readout on hover)
+    private final Pane cursorOverlay = new Pane();
+    private final Line cursorLine = new Line();
+    private final VBox cursorReadout = new VBox(2);
+    private final javafx.scene.control.Label cursorXLabel = new javafx.scene.control.Label();
+    private final List<javafx.scene.control.Label> cursorRows =
+        new ArrayList<javafx.scene.control.Label>();
+    private List<ChartSeriesModel> cursorSeries = new ArrayList<ChartSeriesModel>();
 
     private long datasetToken = Long.MIN_VALUE;
     private double maxRpm = DEFAULT_RPM_MAX;
@@ -78,6 +91,7 @@ public final class LiveDynoChartView extends StackPane {
         chart.setData(FXCollections.observableArrayList());
 
         getChildren().add(chart);
+        installCursorOverlay();
 
         flushTimer = new Timeline(new KeyFrame(Duration.millis(120), event -> flushPendingPoints()));
         flushTimer.setCycleCount(Animation.INDEFINITE);
@@ -104,6 +118,13 @@ public final class LiveDynoChartView extends StackPane {
             overlaySignature = nextOverlaySignature;
             syncAllSeries(model.getOverlaySeries(), model.getSeries());
         }
+
+        // Cursor reads the freshest series every render (live points keep growing).
+        List<ChartSeriesModel> forCursor =
+            new ArrayList<ChartSeriesModel>(model.getSeries().size() + model.getOverlaySeries().size());
+        forCursor.addAll(model.getSeries());
+        forCursor.addAll(model.getOverlaySeries());
+        cursorSeries = forCursor;
 
         currentXAxisLabel = model.getXAxisLabel();
         currentYAxisLabel = model.getYAxisLabel();
@@ -298,6 +319,98 @@ public final class LiveDynoChartView extends StackPane {
             detected = commonMetric(detected, model.getLabel());
         }
         return detected == null ? currentYAxisLabel : detected;
+    }
+
+    private void installCursorOverlay() {
+        cursorLine.setStroke(FxTheme.TEXT_SUBTLE);
+        cursorLine.setStrokeWidth(1);
+        cursorLine.getStrokeDashArray().addAll(4.0, 4.0);
+
+        cursorXLabel.setTextFill(FxTheme.TEXT_PRIMARY);
+        cursorXLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 12px;");
+        cursorReadout.getChildren().add(cursorXLabel);
+        cursorReadout.setPadding(new javafx.geometry.Insets(FxTheme.GAP_S));
+        cursorReadout.setStyle(FxTheme.cardStyle(FxTheme.SURFACE_ALT));
+
+        cursorOverlay.getChildren().addAll(cursorLine, cursorReadout);
+        cursorOverlay.setMouseTransparent(true);
+        cursorOverlay.setVisible(false);
+        getChildren().add(cursorOverlay);
+
+        chart.setOnMouseMoved(event -> updateCursor(event.getSceneX(), event.getSceneY()));
+        chart.setOnMouseExited(event -> cursorOverlay.setVisible(false));
+    }
+
+    private void updateCursor(double sceneX, double sceneY) {
+        javafx.scene.Node plot = chart.lookup(".chart-plot-background");
+        if (plot == null || cursorSeries.isEmpty()) {
+            cursorOverlay.setVisible(false);
+            return;
+        }
+        javafx.geometry.Bounds plotScene = plot.localToScene(plot.getBoundsInLocal());
+        if (sceneX < plotScene.getMinX() || sceneX > plotScene.getMaxX()
+            || sceneY < plotScene.getMinY() || sceneY > plotScene.getMaxY()) {
+            cursorOverlay.setVisible(false);
+            return;
+        }
+
+        double axisLocalX = xAxis.sceneToLocal(sceneX, sceneY).getX();
+        Number axisValue = xAxis.getValueForDisplay(axisLocalX);
+        if (axisValue == null) {
+            cursorOverlay.setVisible(false);
+            return;
+        }
+        double x = Math.max(xAxis.getLowerBound(),
+            Math.min(xAxis.getUpperBound(), axisValue.doubleValue()));
+
+        List<ChartCursorLocator.Reading> readings = ChartCursorLocator.readingsAt(cursorSeries, x);
+        if (readings.isEmpty()) {
+            cursorOverlay.setVisible(false);
+            return;
+        }
+
+        // Crosshair position in overlay coordinates.
+        javafx.geometry.Point2D topLocal =
+            cursorOverlay.sceneToLocal(sceneX, plotScene.getMinY());
+        javafx.geometry.Point2D bottomLocal =
+            cursorOverlay.sceneToLocal(sceneX, plotScene.getMaxY());
+        cursorLine.setStartX(topLocal.getX());
+        cursorLine.setStartY(topLocal.getY());
+        cursorLine.setEndX(bottomLocal.getX());
+        cursorLine.setEndY(bottomLocal.getY());
+
+        // One reused label row per series.
+        while (cursorRows.size() < readings.size()) {
+            javafx.scene.control.Label row = new javafx.scene.control.Label();
+            row.setStyle("-fx-font-size: 12px;");
+            cursorRows.add(row);
+            cursorReadout.getChildren().add(row);
+        }
+        while (cursorRows.size() > readings.size()) {
+            javafx.scene.control.Label row = cursorRows.remove(cursorRows.size() - 1);
+            cursorReadout.getChildren().remove(row);
+        }
+        cursorXLabel.setText(String.format(java.util.Locale.US, "%,.0f %s", x,
+            currentXAxisLabel == null ? "" : currentXAxisLabel));
+        for (int i = 0; i < readings.size(); i++) {
+            ChartCursorLocator.Reading reading = readings.get(i);
+            javafx.scene.control.Label row = cursorRows.get(i);
+            row.setText(String.format(java.util.Locale.US, "%s  %,.1f", reading.getSeriesLabel(), reading.getY()));
+            row.setTextFill(javafx.scene.paint.Color.web(reading.getColorHex()));
+        }
+
+        // Place readout right of the cursor; flip left near the right edge.
+        cursorReadout.applyCss();
+        cursorReadout.layout();
+        double readoutWidth = Math.max(cursorReadout.getWidth(), cursorReadout.prefWidth(-1));
+        double readoutX = topLocal.getX() + 12;
+        double overlayRight = cursorOverlay.sceneToLocal(plotScene.getMaxX(), 0).getX();
+        if (readoutX + readoutWidth > overlayRight) {
+            readoutX = topLocal.getX() - readoutWidth - 12;
+        }
+        cursorReadout.setLayoutX(readoutX);
+        cursorReadout.setLayoutY(topLocal.getY() + 12);
+        cursorOverlay.setVisible(true);
     }
 
     private String commonMetric(String current, String nextLabel) {
