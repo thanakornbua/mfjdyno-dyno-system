@@ -70,3 +70,6 @@ Desktop.ini
 
 # Local assistant/tooling state
 /.java-frontend-link
+
+# OS and filesystem noise (WSL/Windows)
+*Zone.Identifier
