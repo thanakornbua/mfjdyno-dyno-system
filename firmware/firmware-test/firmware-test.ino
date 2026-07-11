@@ -446,7 +446,13 @@ void IRAM_ATTR ignition_isr() {
 }
 
 static void ignition_init() {
-    pinMode(PIN_IGN, INPUT);
+    // INPUT_PULLUP holds the pin HIGH when the ignition sensor is disconnected,
+    // so a floating input can't pick up mains hum and generate phantom FALLING
+    // edges (which showed up as a steady ~6000 RPM with nothing connected).
+    // Assumes an idle-HIGH / active-LOW ignition signal (open-collector LM393),
+    // matching the FALLING-edge trigger below. If the signal is idle-LOW /
+    // active-HIGH instead, switch to INPUT_PULLDOWN and a RISING trigger.
+    pinMode(PIN_IGN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(PIN_IGN), ignition_isr, FALLING);
 }
 

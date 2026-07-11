@@ -308,6 +308,7 @@ mod tests {
             arm_rpm: 1500.0,
             record_rpm: 2000.0,
             stop_rpm: 1000.0,
+            engine_noise_mains_hz: 50.0,
         }
     }
 
