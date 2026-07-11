@@ -16,6 +16,10 @@ import java.util.Map;
 
 public final class CalibrationApiClient {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
+    // The backend's dependency check shells out to `arduino-cli core list`,
+    // which can take several seconds; give it a longer budget than other
+    // endpoints so a slow-but-successful check isn't reported as a timeout.
+    private static final Duration DEPENDENCY_REQUEST_TIMEOUT = Duration.ofSeconds(15);
 
     private final URI baseUri;
     private final HttpClient httpClient;
@@ -151,7 +155,7 @@ public final class CalibrationApiClient {
     }
 
     public DependencyStatusDto listDependencies() throws IOException, InterruptedException {
-        HttpRequest request = requestBuilder("/api/system/dependencies")
+        HttpRequest request = requestBuilder("/api/system/dependencies", DEPENDENCY_REQUEST_TIMEOUT)
             .GET()
             .build();
         return send(request, DependencyStatusDto.class);
@@ -249,8 +253,12 @@ public final class CalibrationApiClient {
     }
 
     private HttpRequest.Builder requestBuilder(String path) {
+        return requestBuilder(path, REQUEST_TIMEOUT);
+    }
+
+    private HttpRequest.Builder requestBuilder(String path, Duration timeout) {
         return HttpRequest.newBuilder(baseUri.resolve(path))
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .header("Accept", "application/json");
     }
 

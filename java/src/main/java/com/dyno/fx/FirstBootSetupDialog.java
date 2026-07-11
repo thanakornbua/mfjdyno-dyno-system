@@ -368,23 +368,63 @@ public final class FirstBootSetupDialog {
         loadDependencies(list, error);
     }
 
+    private static final int DEPENDENCY_CHECK_MAX_ATTEMPTS = 3;
+    private static final long[] DEPENDENCY_CHECK_RETRY_DELAYS_MS = {2000L, 4000L};
+
+    static String dependencyRetryStatusMessage(int attempt, int maxAttempts) {
+        return attempt <= 1
+            ? "Checking dependencies..."
+            : "Still checking — retrying (attempt " + attempt + " of " + maxAttempts + ")...";
+    }
+
     private void loadDependencies(ListView<DependencyDto> list, Label error) {
-        showInfo(error, UiText.text("Checking dependencies..."));
+        Platform.runLater(() -> showInfo(error, UiText.text(dependencyRetryStatusMessage(1, DEPENDENCY_CHECK_MAX_ATTEMPTS))));
         CompletableFuture.runAsync(() -> {
-            try {
-                DependencyStatusDto status = client.listDependencies();
-                Platform.runLater(() -> {
-                    list.getItems().setAll(status.getDependencies());
-                    // Note whether the flash toolchain is missing so the flash
-                    // step can warn/disable up front.
-                    flashToolchainMissing = status.getDependencies().stream()
-                        .anyMatch(dep -> dep.blocksFlashing() && dep.isMissing());
-                    clearMessage(error);
-                });
-            } catch (Exception ex) {
-                Platform.runLater(() ->
-                    showError(error, UiText.text("Could not check dependencies: ") + ex.getMessage()));
+            Exception lastError = null;
+            for (int attempt = 1; attempt <= DEPENDENCY_CHECK_MAX_ATTEMPTS; attempt++) {
+                if (!stage.isShowing()) {
+                    return;
+                }
+                if (attempt > 1) {
+                    final int attemptNumber = attempt;
+                    Platform.runLater(() ->
+                        showInfo(error, UiText.text(dependencyRetryStatusMessage(attemptNumber, DEPENDENCY_CHECK_MAX_ATTEMPTS))));
+                    try {
+                        Thread.sleep(DEPENDENCY_CHECK_RETRY_DELAYS_MS[attempt - 2]);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    if (!stage.isShowing()) {
+                        return;
+                    }
+                }
+                try {
+                    DependencyStatusDto status = client.listDependencies();
+                    Platform.runLater(() -> {
+                        if (!stage.isShowing()) {
+                            return;
+                        }
+                        list.getItems().setAll(status.getDependencies());
+                        // Note whether the flash toolchain is missing so the flash
+                        // step can warn/disable up front.
+                        flashToolchainMissing = status.getDependencies().stream()
+                            .anyMatch(dep -> dep.blocksFlashing() && dep.isMissing());
+                        clearMessage(error);
+                    });
+                    return;
+                } catch (Exception ex) {
+                    lastError = ex;
+                }
             }
+            final Exception finalError = lastError;
+            Platform.runLater(() -> {
+                if (!stage.isShowing()) {
+                    return;
+                }
+                showError(error, UiText.text("Could not check dependencies: ")
+                    + (finalError == null ? "" : finalError.getMessage()));
+            });
         });
     }
 

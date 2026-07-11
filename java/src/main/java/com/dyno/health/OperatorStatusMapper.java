@@ -132,6 +132,21 @@ public final class OperatorStatusMapper {
         );
     }
 
+    public static OperatorStatusModel withSecondaryMessage(OperatorStatusModel base, String secondaryMessage) {
+        return new OperatorStatusModel(
+            base.getOverallState(),
+            base.isBackendReachable(),
+            base.getSourceMode(),
+            base.isStorageReady(),
+            base.isSerialDegraded(),
+            base.isAmbientDegraded(),
+            base.getPrimaryMessage(),
+            secondaryMessage,
+            base.getWarningSummary(),
+            base.getWarnings()
+        );
+    }
+
     private static StartupCheckDto findCheck(List<StartupCheckDto> checks, String name) {
         for (StartupCheckDto check : checks) {
             if (check != null && name.equals(check.getName())) {
