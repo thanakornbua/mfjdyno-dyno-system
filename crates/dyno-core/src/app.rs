@@ -196,7 +196,13 @@ impl App {
                 let (ambient_tx, ambient_rx) =
                     watch::channel::<AmbientSample>(AmbientSample::stub());
                 let (can_tx, can_rx) = watch::channel::<CanSample>(CanSample::missing());
-                let serial = SerialTask::spawn(&config, frame_tx, ambient_tx, serial_gate_worker);
+                let serial = SerialTask::spawn(
+                    &config,
+                    frame_tx,
+                    ambient_tx,
+                    serial_gate_worker,
+                    calibration_rx.clone(),
+                );
                 let can = CanTask::spawn(config.can_iface.clone(), can_tx);
                 let fusion = FusionTask::spawn(
                     frame_rx,
