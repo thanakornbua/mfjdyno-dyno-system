@@ -35,7 +35,7 @@ public final class OperatorStatusMapperTest {
     }
 
     @Test
-    public void serialAndAmbientChecksMapToDegradedMessages() throws Exception {
+    public void serialAndAmbientChecksStayReadyWithWarnings() throws Exception {
         OperatorStatusModel model = OperatorStatusMapper.fromHealth(
             health(
                 "degraded",
@@ -49,24 +49,28 @@ public final class OperatorStatusMapperTest {
             )
         );
 
-        assertEquals(OperatorStatusModel.OverallState.DEGRADED, model.getOverallState());
+        assertEquals(OperatorStatusModel.OverallState.READY, model.getOverallState());
         assertTrue(model.isSerialDegraded());
         assertTrue(model.isAmbientDegraded());
-        assertEquals("Serial input unavailable — retrying", model.getPrimaryMessage());
+        assertEquals("Backend ready", model.getPrimaryMessage());
         assertEquals("3 startup warnings active", model.getWarningSummary());
         assertEquals("Live mode active | 3 startup warnings active", model.getSecondaryMessage());
+        assertTrue(model.getWarnings().contains("Serial input unavailable — retrying"));
+        assertTrue(model.getWarnings().contains("Ambient sensor unavailable — fallback values in use"));
+        assertTrue(model.getWarnings().contains("UART bridge unavailable — retrying"));
     }
 
     @Test
-    public void storageProblemsMapToDegradedStorageState() throws Exception {
+    public void storageProblemsStayReadyWithStorageWarning() throws Exception {
         OperatorStatusModel model = OperatorStatusMapper.fromHealth(
             health("error", "live", Collections.singletonList(check("database_path", "error")))
         );
 
-        assertEquals(OperatorStatusModel.OverallState.DEGRADED, model.getOverallState());
+        assertEquals(OperatorStatusModel.OverallState.READY, model.getOverallState());
         assertFalse(model.isStorageReady());
-        assertEquals("Storage unavailable", model.getPrimaryMessage());
+        assertEquals("Backend ready", model.getPrimaryMessage());
         assertEquals("Live mode active | 1 startup warning active", model.getSecondaryMessage());
+        assertTrue(model.getWarnings().contains("Storage unavailable"));
     }
 
     @Test

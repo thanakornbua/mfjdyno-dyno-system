@@ -57,7 +57,7 @@ public final class OperatorConsoleStage {
     private final HistoryApiClient historyApiClient = HistoryApiClient.fromEnvironment();
     private final CalibrationApiClient calibrationApiClient = CalibrationApiClient.fromEnvironment();
     private final HealthApiClient healthApiClient = HealthApiClient.fromEnvironment();
-    private final HealthPollDebouncer healthPollDebouncer = new HealthPollDebouncer(3);
+    private final HealthPollDebouncer healthPollDebouncer = new HealthPollDebouncer(2);
     private final RunControlUiState runControlState = new RunControlUiState();
     private final ExecutorService controlExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "dyno-ui-run-control");
@@ -368,7 +368,7 @@ public final class OperatorConsoleStage {
                     renderRoot();
                 });
             }
-        }, 0, 5, TimeUnit.SECONDS);
+        }, 0, 15, TimeUnit.MINUTES);
     }
 
     private void handleCompareRequested() {

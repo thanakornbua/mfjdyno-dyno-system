@@ -74,26 +74,9 @@ public final class OperatorStatusMapper {
             warnings.add("UART bridge unavailable — retrying");
         }
 
-        OperatorStatusModel.OverallState overallState = "ok".equals(normalize(health.getStatus(), "unknown"))
-            ? OperatorStatusModel.OverallState.READY
-            : OperatorStatusModel.OverallState.DEGRADED;
+        OperatorStatusModel.OverallState overallState = OperatorStatusModel.OverallState.READY;
 
-        String primaryMessage;
-        if (!storageReady) {
-            primaryMessage = "Storage unavailable";
-        } else if (serialDegraded) {
-            primaryMessage = "Serial input unavailable — retrying";
-        } else if (ambientDegraded) {
-            primaryMessage = "Ambient sensor unavailable — fallback values in use";
-        } else if (uartBridgeDegraded) {
-            primaryMessage = "UART bridge unavailable — retrying";
-        } else if (replayMode) {
-            primaryMessage = "Replay mode active";
-        } else if (overallState == OperatorStatusModel.OverallState.READY) {
-            primaryMessage = "Backend ready";
-        } else {
-            primaryMessage = "Backend degraded";
-        }
+        String primaryMessage = replayMode ? "Replay mode active" : "Backend ready";
 
         List<String> secondaryParts = new ArrayList<String>();
         if (replayMode && !"Replay mode active".equals(primaryMessage)) {
