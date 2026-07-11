@@ -20,7 +20,14 @@ if ! curl -fsS -m 5 "${API_BASE}/healthz" >/dev/null 2>&1; then
 fi
 
 if [ -n "$PORT" ]; then
-  BODY="{\"flash_serial_port\":\"${PORT}\"}"
+  case "$PORT" in
+    /dev/*) ;;
+    *)
+      echo "flash-esp32.sh: invalid port '$PORT' (expected /dev/*)" >&2
+      exit 1
+      ;;
+  esac
+  BODY="$(printf '{"flash_serial_port":"%s"}' "$PORT")"
 else
   BODY="{}"
 fi
