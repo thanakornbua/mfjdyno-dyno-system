@@ -814,6 +814,7 @@ mod tests {
             arm_rpm: 1500.0,
             record_rpm: 2000.0,
             stop_rpm: 1000.0,
+            engine_noise_mains_hz: 50.0,
         };
 
         let profile = CalibrationProfile::bootstrap_default(&config, 1234);
@@ -878,6 +879,7 @@ mod tests {
             arm_rpm: 1500.0,
             record_rpm: 2000.0,
             stop_rpm: 1000.0,
+            engine_noise_mains_hz: 50.0,
         };
 
         let storage = Storage::open(&config).await.expect("open storage");
