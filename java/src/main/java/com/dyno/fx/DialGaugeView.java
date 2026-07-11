@@ -119,7 +119,7 @@ final class DialGaugeView extends VBox {
 
         // Ticks + labels
         g.setTextAlign(TextAlignment.CENTER);
-        g.setFont(Font.font("SansSerif", FontWeight.BOLD, Math.max(9, radius * 0.11)));
+        g.setFont(ThaiAwareFont.font(FontWeight.BOLD, Math.max(9, radius * 0.11)));
         int tickCount = majorTick > 0 ? (int) Math.round((max - min) / majorTick) : 0;
         for (int i = 0; i <= tickCount; i++) {
             double tickValue = min + i * majorTick;
@@ -156,14 +156,14 @@ final class DialGaugeView extends VBox {
         // Title above center, value + unit below center
         g.setTextAlign(TextAlignment.CENTER);
         g.setFill(FxTheme.TEXT_MUTED);
-        g.setFont(Font.font("SansSerif", FontWeight.BOLD, Math.max(10, radius * 0.13)));
+        g.setFont(ThaiAwareFont.font(FontWeight.BOLD, Math.max(10, radius * 0.13)));
         g.fillText(title, cx, cy - radius * 0.28);
         g.setFill(value == null ? FxTheme.UNAVAILABLE : FxTheme.TEXT_PRIMARY);
-        g.setFont(Font.font("Monospaced", FontWeight.BOLD, Math.max(16, radius * 0.30)));
+        g.setFont(ThaiAwareFont.monospaced(FontWeight.BOLD, Math.max(16, radius * 0.30)));
         String text = readoutText();
         g.fillText(text, cx, cy + radius * 0.48);
         g.setFill(FxTheme.TEXT_SUBTLE);
-        g.setFont(Font.font("SansSerif", FontWeight.NORMAL, Math.max(9, radius * 0.11)));
+        g.setFont(ThaiAwareFont.font(FontWeight.NORMAL, Math.max(9, radius * 0.11)));
         g.fillText(unit, cx, cy + radius * 0.62);
 
         lastDrawnNeedle = needle;

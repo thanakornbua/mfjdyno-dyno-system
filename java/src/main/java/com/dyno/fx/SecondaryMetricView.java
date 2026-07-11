@@ -18,13 +18,13 @@ final class SecondaryMetricView extends VBox {
         setStyle("-fx-background-color: transparent; -fx-border-color: transparent;");
 
         label.setTextFill(FxTheme.TEXT_SUBTLE);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 14));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 14));
 
         value.setTextFill(FxTheme.TEXT_PRIMARY);
-        value.setFont(Font.font("Monospaced", FontWeight.BOLD, 26));
+        value.setFont(ThaiAwareFont.monospaced(FontWeight.BOLD, 26));
 
         unit.setTextFill(FxTheme.TEXT_MUTED);
-        unit.setFont(Font.font("SansSerif", FontWeight.NORMAL, 14));
+        unit.setFont(ThaiAwareFont.font(FontWeight.NORMAL, 14));
 
         getChildren().addAll(label, value, unit);
     }
@@ -37,6 +37,6 @@ final class SecondaryMetricView extends VBox {
     }
 
     void applySizing(double valueFontSize) {
-        value.setFont(Font.font("Monospaced", FontWeight.BOLD, valueFontSize));
+        value.setFont(ThaiAwareFont.monospaced(FontWeight.BOLD, valueFontSize));
     }
 }

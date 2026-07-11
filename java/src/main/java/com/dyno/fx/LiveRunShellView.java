@@ -943,14 +943,14 @@ public final class LiveRunShellView extends BorderPane {
     private Label runModeMetricValue(String text) {
         Label label = new Label(UiText.text(text));
         label.setTextFill(FxTheme.TEXT_PRIMARY);
-        label.setFont(Font.font("Monospaced", FontWeight.BOLD, 64));
+        label.setFont(ThaiAwareFont.monospaced(FontWeight.BOLD, 64));
         return label;
     }
 
     private VBox runModeMetricCard(String title, Label value) {
         Label heading = new Label(title);
         heading.setTextFill(FxTheme.TEXT_SUBTLE);
-        heading.setFont(Font.font("SansSerif", FontWeight.BOLD, 20));
+        heading.setFont(ThaiAwareFont.font(FontWeight.BOLD, 20));
         VBox box = new VBox(FxTheme.GAP_S, heading, value);
         box.setPadding(FxTheme.PAD_CARD);
         box.setStyle(FxTheme.cardStyle(FxTheme.SURFACE));
@@ -960,25 +960,25 @@ public final class LiveRunShellView extends BorderPane {
     private Label sectionTitle(String text) {
         Label label = new Label(text);
         label.setTextFill(FxTheme.TEXT_SUBTLE);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 15));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 15));
         return label;
     }
 
     private Label subSectionTitle(String text) {
         Label label = new Label(text);
         label.setTextFill(FxTheme.TEXT_MUTED);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 14));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 14));
         return label;
     }
 
     private void styleSidebarTitle(Label label) {
         label.setTextFill(FxTheme.TEXT_SUBTLE);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 15));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 15));
     }
 
     private void styleSidebarPrimary(Label label) {
         label.setTextFill(FxTheme.TEXT_PRIMARY);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 18));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 18));
         label.setWrapText(true);
     }
 
@@ -991,18 +991,18 @@ public final class LiveRunShellView extends BorderPane {
 
     private void styleSummaryTitle(Label label) {
         label.setTextFill(FxTheme.TEXT_SUBTLE);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 15));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 15));
     }
 
     private void styleSummaryPrimary(Label label) {
         label.setTextFill(FxTheme.TEXT_PRIMARY);
-        label.setFont(Font.font("SansSerif", FontWeight.BOLD, 18));
+        label.setFont(ThaiAwareFont.font(FontWeight.BOLD, 18));
         label.setWrapText(true);
     }
 
     private void styleSummarySecondary(Label label) {
         label.setTextFill(FxTheme.TEXT_MUTED);
-        label.setFont(Font.font("SansSerif", FontWeight.NORMAL, 15));
+        label.setFont(ThaiAwareFont.font(FontWeight.NORMAL, 15));
         label.setWrapText(true);
     }
 
