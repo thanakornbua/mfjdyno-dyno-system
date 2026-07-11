@@ -5,7 +5,7 @@
 //! responses) and send outbound command packets.
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -14,6 +14,15 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// command is sent, so `DEVICE_INFO_GET` doesn't race the reboot.
 const POST_OPEN_SETTLE: Duration = Duration::from_millis(1_500);
 const DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(50);
+/// Upper bound on how long [`discard_buffered_input`] will spend draining.
+///
+/// The per-read [`DRAIN_READ_TIMEOUT`] alone is not enough to guarantee
+/// termination: a device that streams telemetry continuously (e.g. the ESP32
+/// at 20 Hz, one line every ~50 ms) never leaves a full [`DRAIN_READ_TIMEOUT`]
+/// gap of silence, so the drain loop would `continue` forever and hang
+/// startup. Capping the total drain duration guarantees we always move on to
+/// reading real frames.
+const DRAIN_MAX_DURATION: Duration = Duration::from_millis(300);
 
 use dyno_protocol::{
     CommandPacket, DynoConfig, DynoFrameV1, PacketDecodeStatus, PacketDecoder, WirePacket,
@@ -44,11 +53,23 @@ impl DynoUartLink {
 
 /// Drain and discard whatever bytes are currently sitting in the port's
 /// input buffer without blocking indefinitely: stop as soon as a short read
-/// yields nothing new.
-pub(crate) async fn discard_buffered_input(port: &mut tokio_serial::SerialStream) -> io::Result<()> {
+/// yields nothing new, or once [`DRAIN_MAX_DURATION`] has elapsed.
+///
+/// The total-duration cap is load-bearing: a device that streams
+/// continuously never produces a [`DRAIN_READ_TIMEOUT`] gap, so without the
+/// deadline the loop would never terminate.
+pub(crate) async fn discard_buffered_input<T: AsyncRead + Unpin>(
+    port: &mut T,
+) -> io::Result<()> {
+    let deadline = Instant::now() + DRAIN_MAX_DURATION;
     let mut scratch = [0u8; 256];
     loop {
-        match tokio::time::timeout(DRAIN_READ_TIMEOUT, port.read(&mut scratch)).await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        let read_timeout = DRAIN_READ_TIMEOUT.min(remaining);
+        match tokio::time::timeout(read_timeout, port.read(&mut scratch)).await {
             Ok(Ok(0)) | Err(_) => return Ok(()),
             Ok(Ok(_)) => continue,
             Ok(Err(e)) => return Err(e),
@@ -161,7 +182,44 @@ mod tests {
         AckResponse, DynoConfig, EngineEdgeMode, PacketType, WirePacket, crc16_ccitt, FRAME_SIZE,
         MAGIC,
     };
-    use tokio::io::duplex;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{duplex, ReadBuf};
+
+    /// A transport that always has a byte ready — models a device streaming
+    /// continuously with no inter-read gap, the condition that previously hung
+    /// `discard_buffered_input` forever.
+    struct AlwaysReadable;
+
+    impl AsyncRead for AlwaysReadable {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if buf.remaining() > 0 {
+                buf.put_slice(&[b'x']);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn discard_buffered_input_terminates_on_continuous_stream() {
+        let mut port = AlwaysReadable;
+        let start = Instant::now();
+        // Must return despite the stream never going idle; bounded by
+        // DRAIN_MAX_DURATION plus scheduling slack.
+        tokio::time::timeout(Duration::from_secs(2), discard_buffered_input(&mut port))
+            .await
+            .expect("drain must not hang on a continuous stream")
+            .expect("drain returns Ok");
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "drain should stop near DRAIN_MAX_DURATION, took {:?}",
+            start.elapsed()
+        );
+    }
 
     fn make_ack_packet(seq: u32) -> [u8; FRAME_SIZE] {
         let mut packet = [0u8; FRAME_SIZE];
