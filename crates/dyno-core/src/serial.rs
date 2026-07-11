@@ -44,6 +44,7 @@ use tracing::{error, info, warn};
 use dyno_protocol::DynoFrameV1;
 
 use crate::bme280::AmbientSample;
+use crate::calibration::CalibrationProfile;
 use crate::config::Config;
 use crate::esp32_json::{
     parse_json_telemetry_line, telemetry_ambient_or_stub, telemetry_to_frame, JsonTelemetryMapping,
@@ -84,11 +85,18 @@ impl SerialTask {
         tx: watch::Sender<DynoFrameV1>,
         ambient_tx: watch::Sender<AmbientSample>,
         gate: SerialGateWorker,
+        calibration_rx: watch::Receiver<CalibrationProfile>,
     ) -> Self {
         let port_path = config.serial_port.clone();
         let baud      = config.serial_baud;
-        let mapping   = JsonTelemetryMapping::from_runtime_config(config);
-        let handle = tokio::spawn(serial_task_outer(port_path, baud, mapping, tx, ambient_tx, gate));
+        let handle = tokio::spawn(serial_task_outer(
+            port_path,
+            baud,
+            calibration_rx,
+            tx,
+            ambient_tx,
+            gate,
+        ));
         info!("serial task spawned");
         Self { handle }
     }
@@ -107,7 +115,7 @@ impl Drop for SerialTask {
 async fn serial_task_outer(
     port_path: String,
     baud: u32,
-    mapping: JsonTelemetryMapping,
+    calibration_rx: watch::Receiver<CalibrationProfile>,
     tx: watch::Sender<DynoFrameV1>,
     ambient_tx: watch::Sender<AmbientSample>,
     mut gate: SerialGateWorker,
@@ -141,7 +149,7 @@ async fn serial_task_outer(
         }
 
         gate.publish_actual(true);
-        let exit = serial_read_loop(port, mapping, &tx, &ambient_tx, &mut gate).await;
+        let exit = serial_read_loop(port, &calibration_rx, &tx, &ambient_tx, &mut gate).await;
         gate.publish_actual(false);
 
         match exit {
@@ -177,7 +185,7 @@ enum LoopExit {
 
 async fn serial_read_loop(
     port: tokio_serial::SerialStream,
-    mapping: JsonTelemetryMapping,
+    calibration_rx: &watch::Receiver<CalibrationProfile>,
     tx: &watch::Sender<DynoFrameV1>,
     ambient_tx: &watch::Sender<AmbientSample>,
     gate: &mut SerialGateWorker,
@@ -254,6 +262,7 @@ async fn serial_read_loop(
         };
 
         consecutive_failures = 0;
+        let mapping = JsonTelemetryMapping::from_calibration(&calibration_rx.borrow());
         let frame = telemetry_to_frame(&telemetry, mapping);
         let ambient = telemetry_ambient_or_stub(&telemetry);
         total += 1;

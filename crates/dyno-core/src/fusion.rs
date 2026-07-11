@@ -577,4 +577,89 @@ mod tests {
             assert_ne!(next_run_state(true, rpm, thresholds()), RunState::Stopping);
         }
     }
+
+    #[test]
+    fn dt_s_from_timestamps_handles_u32_wraparound() {
+        // Firmware `micros()` (and the truncated `ts_us as u32` field) wraps
+        // every ~71.6 minutes; `wrapping_sub` recovers the true forward delta
+        // instead of producing a negative/None dt that would permanently
+        // stall alpha/power computation after every wraparound.
+        let prev_ts_us = u32::MAX - 1_000; // just before wraparound
+        let curr_ts_us = 4_000u32; // just after wraparound
+        let expected_dt_us = curr_ts_us.wrapping_sub(prev_ts_us);
+
+        let dt_s = dt_s_from_timestamps(prev_ts_us, curr_ts_us).expect("dt across wraparound");
+
+        assert!((dt_s - expected_dt_us as f32 / 1_000_000.0).abs() < 1e-6);
+        assert!(dt_s > 0.0);
+    }
+
+    #[test]
+    fn dt_s_from_timestamps_zero_delta_is_none() {
+        assert_eq!(dt_s_from_timestamps(100, 100), None);
+    }
+
+    /// End-to-end: a firmware-shaped JSON telemetry line, through the same
+    /// encode (`telemetry_to_frame`) / decode (`fuse_frame`) mapping the
+    /// live serial→fusion pipeline uses, produces non-null engine_rpm,
+    /// roller_rpm, and ambient values in the `LiveFrame` the operator
+    /// console renders.
+    #[test]
+    fn firmware_json_line_produces_populated_live_frame() {
+        use crate::calibration::CalibrationProfile;
+        use crate::esp32_json::{parse_json_telemetry_line, telemetry_to_frame, JsonTelemetryMapping};
+
+        let profile = CalibrationProfile {
+            profile_id: 1,
+            name: "Bench profile".to_owned(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            is_active: true,
+            roller_diameter_m: 0.318,
+            encoder_pulses_per_rev: 60.0,
+            roller_inertia_kg_m2: 3.5,
+            sample_window_ms: 50,
+            engine_pulses_per_rev_hint: None,
+            engine_rpm_scale: None,
+            engine_stroke: None,
+            engine_cylinders: None,
+            notes: None,
+        };
+        let mapping = JsonTelemetryMapping::from_calibration(&profile);
+
+        let line = r#"{"seq":1,"ts_us":50000,"engine_rpm":3200.0,"roller_rpm":1150.0,"encoder_count":1000,"encoder_delta":0,"temp_c":27.5,"humidity":45.0,"pressure":1009.0,"afr":0.0,"lambda":0.0,"engine_valid":true,"encoder_valid":true,"bme_valid":true,"can_valid":false}"#;
+        let telemetry = parse_json_telemetry_line(line)
+            .expect("valid json")
+            .expect("telemetry present");
+        let frame = telemetry_to_frame(&telemetry, mapping);
+
+        let physics = FusionPhysicsConfig::from_calibration(&profile);
+        let live = fuse_frame(
+            &frame,
+            AmbientSample {
+                temp_c: telemetry.temp_c,
+                humidity_pct: telemetry.humidity,
+                pressure_hpa: telemetry.pressure,
+            },
+            &CanSample::missing(),
+            CorrectionMode::None,
+            physics,
+            &mut PhysicsState::default(),
+            RunState::Idle,
+        );
+
+        assert!(live.engine_rpm.is_some(), "engine_rpm should not be null");
+        assert!(
+            (live.engine_rpm.unwrap() - 3200.0).abs() < 5.0,
+            "engine_rpm should round-trip to ~3200, got {:?}",
+            live.engine_rpm
+        );
+        assert!(live.roller_rpm.is_some(), "roller_rpm should not be null");
+        assert!(
+            (live.roller_rpm.unwrap() - 1150.0).abs() < 20.0,
+            "roller_rpm should round-trip to ~1150, got {:?}",
+            live.roller_rpm
+        );
+        assert_eq!(live.ambient_temp_c, Some(27.5));
+    }
 }
