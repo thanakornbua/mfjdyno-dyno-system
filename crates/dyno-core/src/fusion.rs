@@ -337,7 +337,10 @@ fn fuse_frame(
         physics_state.prev_ts_us = Some(frame.ts_us);
     }
 
-    let afr = if can.afr_valid {
+    // Validity-gated values, used for the alert thresholds only: an absent
+    // sensor must stay `None` here or a defaulted 0.0 would read as a
+    // critically-lean/rich mixture.
+    let gated_afr = if can.afr_valid {
         can.afr
     } else if esp32_status.afr_valid {
         scaled_value_x100(frame.afr_scaled_x100)
@@ -345,7 +348,7 @@ fn fuse_frame(
         None
     };
 
-    let lambda = if can.afr_valid {
+    let gated_lambda = if can.afr_valid {
         can.lambda
     } else if esp32_status.lambda_valid {
         scaled_value_x1000(frame.lambda_scaled_x1000)
@@ -354,15 +357,23 @@ fn fuse_frame(
     };
     let faults = map_frame_faults(frame, &esp32_status);
 
+    // Display rule: always present the received reading, zero included — the
+    // dashboard shows the number as read, never a dash, while telemetry is
+    // flowing. Graph layers filter out-of-range values on their own
+    // (values below 0 are not plotted).
     LiveFrame {
         ts_ms: i64::from(frame.ts_us / 1_000),
-        engine_rpm,
-        roller_rpm,
-        speed_kmh: roller_rpm.and_then(|rpm| speed_kmh_from_roller_rpm(rpm, physics.roller_diameter_m)),
-        power_hp: corrected_power_hp,
-        torque_nm: corrected_torque_nm,
-        afr,
-        lambda,
+        engine_rpm: Some(engine_rpm.unwrap_or(0.0)),
+        roller_rpm: Some(roller_rpm.unwrap_or(0.0)),
+        speed_kmh: Some(
+            roller_rpm
+                .and_then(|rpm| speed_kmh_from_roller_rpm(rpm, physics.roller_diameter_m))
+                .unwrap_or(0.0),
+        ),
+        power_hp: Some(corrected_power_hp.unwrap_or(0.0)),
+        torque_nm: Some(corrected_torque_nm.unwrap_or(0.0)),
+        afr: Some(gated_afr.unwrap_or(0.0)),
+        lambda: Some(gated_lambda.unwrap_or(0.0)),
         can_present: can.can_present,
         can_frames_seen: can.can_frames_seen,
         afr_valid: can.afr_valid || esp32_status.afr_valid,
@@ -377,8 +388,8 @@ fn fuse_frame(
         faults,
         alerts: LiveAlerts {
             exhaust_temp: AlertLevel::Ok,
-            o2_ratio: o2_alert_from_afr(afr),
-            lambda: lambda_alert(lambda),
+            o2_ratio: o2_alert_from_afr(gated_afr),
+            lambda: lambda_alert(gated_lambda),
         },
     }
 }
@@ -578,7 +589,8 @@ mod tests {
             RunState::Idle,
             50.0,
         );
-        assert_eq!(live.engine_rpm, None, "mains hum should be suppressed");
+        // Suppressed to 0 (not absent): the display always shows a number.
+        assert_eq!(live.engine_rpm, Some(0.0), "mains hum should be suppressed to 0");
 
         // With the mains gate disabled the same reading passes through.
         let live_disabled = fuse_frame(
@@ -664,10 +676,14 @@ mod tests {
             0.0,
         );
 
-        assert_eq!(live.engine_rpm, None);
-        assert!(live.roller_rpm.is_some());
-        assert_eq!(live.afr, None);
-        assert_eq!(live.lambda, None);
+        // Invalid domains read 0 (display rule: always show a number), while
+        // the validity flags and alerts still mark them as absent.
+        assert_eq!(live.engine_rpm, Some(0.0));
+        assert!(live.roller_rpm.unwrap() > 0.0);
+        assert_eq!(live.afr, Some(0.0));
+        assert_eq!(live.lambda, Some(0.0));
+        assert_eq!(live.alerts.o2_ratio, AlertLevel::Ok, "absent AFR must not alarm");
+        assert_eq!(live.alerts.lambda, AlertLevel::Ok, "absent lambda must not alarm");
         assert!(live.faults.contains(&FaultCode::EnginePulseInvalid));
     }
 
