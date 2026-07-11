@@ -89,15 +89,15 @@ public final class CompareDisplayMapper {
                 ));
             }
 
-            RunHistoryFrameDto peakFrame = peakPowerFrame(comparedRun);
+            RunHistoryFrameDto peakFrame = frameAtPeakPower(comparedRun);
             RunHistoryFrameDto fastestFrame = RunMetrics.fastestFrame(comparedRun);
             Double timeToFastest = RunMetrics.timeToFrameSeconds(frames, fastestFrame);
             summaryLines.add(
                 runLabel
                     + "  "
-                    + safeValue(peakFrame == null ? null : peakFrame.getPowerHp(), "HP")
+                    + safeValue(run.getPeakPowerHp(), "HP")
                     + " @ "
-                    + safeValue(peakFrame == null ? null : peakFrame.getEngineRpm(), "RPM")
+                    + safeValue(run.getPeakPowerRpm(), "RPM")
                     + "  |  "
                     + safeValue(run.getPeakTorqueNm(), "Nm")
                     + " @ "
@@ -152,8 +152,8 @@ public final class CompareDisplayMapper {
         );
     }
 
-    public static RunHistoryFrameDto peakPowerFrame(ComparedRunDto comparedRun) {
-        return RunMetrics.peakPowerFrame(comparedRun);
+    public static RunHistoryFrameDto frameAtPeakPower(ComparedRunDto comparedRun) {
+        return RunMetrics.frameAtPeakPower(comparedRun);
     }
 
     public static String runLabel(RunHistoryDetailDto run) {

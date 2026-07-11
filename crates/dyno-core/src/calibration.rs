@@ -158,6 +158,9 @@ const ENGINE_RPM_SCALE_HARD_MAX: f32 = 100.0;
 
 const PROFILE_NAME_MAX_LEN: usize = 120;
 
+const ENGINE_CYLINDERS_MIN: u8 = 1;
+const ENGINE_CYLINDERS_MAX: u8 = 12;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationProfile {
     pub profile_id: i64,
@@ -173,6 +176,12 @@ pub struct CalibrationProfile {
 
     pub engine_pulses_per_rev_hint: Option<f32>,
     pub engine_rpm_scale: Option<f32>,
+    /// Operator-facing engine stroke, `2` or `4`. Together with
+    /// `engine_cylinders`, derives `engine_rpm_scale` when
+    /// `engine_pulses_per_rev_hint` is not explicitly set — see
+    /// [`derive_pulses_per_rev`].
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
 
     pub notes: Option<String>,
 }
@@ -186,7 +195,35 @@ pub struct CalibrationProfileInput {
     pub sample_window_ms: u64,
     pub engine_pulses_per_rev_hint: Option<f32>,
     pub engine_rpm_scale: Option<f32>,
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
     pub notes: Option<String>,
+}
+
+/// Derive pulses-per-crank-revolution from stroke and cylinder count, for a
+/// baseline single-spark-per-cylinder ignition (distributor or
+/// coil-per-cylinder). `None` if `stroke` isn't `2` or `4`, or `cylinders`
+/// is `0`.
+///
+/// - 4-stroke: each cylinder sparks once per two crank revolutions, so
+///   `pulses_per_rev = cylinders / 2`.
+/// - 2-stroke: each cylinder sparks once per crank revolution, so
+///   `pulses_per_rev = cylinders`.
+///
+/// This is a default, not a measurement: wasted-spark and single-pickup
+/// ignition setups fire differently and aren't derivable from stroke and
+/// cylinder count alone. `engine_pulses_per_rev_hint` remains the operator
+/// override for those cases and always takes precedence over this
+/// derivation.
+pub fn derive_pulses_per_rev(stroke: u8, cylinders: u8) -> Option<f32> {
+    if cylinders == 0 {
+        return None;
+    }
+    match stroke {
+        4 => Some(f32::from(cylinders) / 2.0),
+        2 => Some(f32::from(cylinders)),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +315,8 @@ impl CalibrationProfile {
             sample_window_ms: u64::from(config.sample_window_ms),
             engine_pulses_per_rev_hint: None,
             engine_rpm_scale: None,
+            engine_stroke: None,
+            engine_cylinders: None,
             notes: Some(
                 "Bootstrapped from DYNO_* environment defaults on first startup".to_owned(),
             ),
@@ -286,7 +325,30 @@ impl CalibrationProfile {
 }
 
 impl CalibrationProfileInput {
+    /// Trims text fields and, when the operator hasn't explicitly set
+    /// `engine_rpm_scale` or an override hint, derives it from
+    /// `engine_stroke`/`engine_cylinders` via [`derive_pulses_per_rev`]:
+    ///
+    /// ```text
+    /// effective_ppr    = engine_pulses_per_rev_hint.unwrap_or(derive_pulses_per_rev(stroke, cylinders))
+    /// engine_rpm_scale = 1.0 / effective_ppr   // firmware PULSES_PER_REV is always 1
+    /// ```
+    ///
+    /// If neither the hint nor a valid stroke+cylinders pair is present,
+    /// `engine_rpm_scale` passes through untouched (today's behavior: no
+    /// scaling applied downstream).
     pub fn normalized(&self) -> Self {
+        let effective_ppr = self.engine_pulses_per_rev_hint.or_else(|| {
+            match (self.engine_stroke, self.engine_cylinders) {
+                (Some(stroke), Some(cylinders)) => derive_pulses_per_rev(stroke, cylinders),
+                _ => None,
+            }
+        });
+        let engine_rpm_scale = match effective_ppr {
+            Some(ppr) if ppr > 0.0 => Some(1.0 / ppr),
+            _ => self.engine_rpm_scale,
+        };
+
         Self {
             name: self.name.trim().to_owned(),
             roller_diameter_m: self.roller_diameter_m,
@@ -294,7 +356,9 @@ impl CalibrationProfileInput {
             roller_inertia_kg_m2: self.roller_inertia_kg_m2,
             sample_window_ms: self.sample_window_ms,
             engine_pulses_per_rev_hint: self.engine_pulses_per_rev_hint,
-            engine_rpm_scale: self.engine_rpm_scale,
+            engine_rpm_scale,
+            engine_stroke: self.engine_stroke,
+            engine_cylinders: self.engine_cylinders,
             notes: self
                 .notes
                 .as_deref()
@@ -323,6 +387,8 @@ impl CalibrationProfileInput {
             sample_window_ms: self.sample_window_ms,
             engine_pulses_per_rev_hint: self.engine_pulses_per_rev_hint,
             engine_rpm_scale: self.engine_rpm_scale,
+            engine_stroke: self.engine_stroke,
+            engine_cylinders: self.engine_cylinders,
             notes: self.notes,
         }
     }
@@ -481,6 +547,43 @@ pub fn validate_engine_rpm_scale(value: Option<f32>) -> CalibrationFieldValidati
     )
 }
 
+pub fn validate_engine_stroke(value: Option<u8>) -> CalibrationFieldValidation {
+    let mut result = CalibrationFieldValidation::default();
+    if let Some(stroke) = value {
+        if stroke != 2 && stroke != 4 {
+            result.errors.push("must be 2 or 4 when provided".to_owned());
+        }
+    }
+    result
+}
+
+pub fn validate_engine_cylinders(value: Option<u8>) -> CalibrationFieldValidation {
+    let mut result = CalibrationFieldValidation::default();
+    if let Some(cylinders) = value {
+        if !(ENGINE_CYLINDERS_MIN..=ENGINE_CYLINDERS_MAX).contains(&cylinders) {
+            result.errors.push(format!(
+                "must be between {ENGINE_CYLINDERS_MIN} and {ENGINE_CYLINDERS_MAX} when provided"
+            ));
+        }
+    }
+    result
+}
+
+/// Stroke and cylinder count derive `engine_rpm_scale` together — one
+/// without the other can't be resolved to a pulses-per-rev value.
+fn validate_engine_stroke_and_cylinders_paired(
+    stroke: Option<u8>,
+    cylinders: Option<u8>,
+) -> CalibrationFieldValidation {
+    let mut result = CalibrationFieldValidation::default();
+    if stroke.is_some() != cylinders.is_some() {
+        result
+            .errors
+            .push("engine_stroke and engine_cylinders must be set together".to_owned());
+    }
+    result
+}
+
 pub fn validate_profile(profile: &CalibrationProfile) -> CalibrationValidation {
     let mut result = CalibrationValidation {
         is_valid: true,
@@ -511,6 +614,15 @@ pub fn validate_profile(profile: &CalibrationProfile) -> CalibrationValidation {
     result.push_prefixed(
         "engine_rpm_scale",
         validate_engine_rpm_scale(profile.engine_rpm_scale),
+    );
+    result.push_prefixed("engine_stroke", validate_engine_stroke(profile.engine_stroke));
+    result.push_prefixed(
+        "engine_cylinders",
+        validate_engine_cylinders(profile.engine_cylinders),
+    );
+    result.push_prefixed(
+        "engine_stroke",
+        validate_engine_stroke_and_cylinders_paired(profile.engine_stroke, profile.engine_cylinders),
     );
     result.is_valid = result.errors.is_empty();
 
@@ -549,6 +661,15 @@ pub fn validate_profile_input(input: &CalibrationProfileInput) -> CalibrationVal
     result.push_prefixed(
         "engine_rpm_scale",
         validate_engine_rpm_scale(normalized.engine_rpm_scale),
+    );
+    result.push_prefixed("engine_stroke", validate_engine_stroke(normalized.engine_stroke));
+    result.push_prefixed(
+        "engine_cylinders",
+        validate_engine_cylinders(normalized.engine_cylinders),
+    );
+    result.push_prefixed(
+        "engine_stroke",
+        validate_engine_stroke_and_cylinders_paired(normalized.engine_stroke, normalized.engine_cylinders),
     );
     result.is_valid = result.errors.is_empty();
 
@@ -613,6 +734,8 @@ mod tests {
             sample_window_ms: 100,
             engine_pulses_per_rev_hint: Some(1.0),
             engine_rpm_scale: Some(1.0),
+            engine_stroke: None,
+            engine_cylinders: None,
             notes: None,
         }
     }
@@ -626,6 +749,8 @@ mod tests {
             sample_window_ms: 100,
             engine_pulses_per_rev_hint: Some(1.0),
             engine_rpm_scale: Some(1.0),
+            engine_stroke: None,
+            engine_cylinders: None,
             notes: Some("  baseline  ".to_owned()),
         }
     }
@@ -774,5 +899,100 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn derive_pulses_per_rev_four_stroke_halves_cylinder_count() {
+        assert_eq!(derive_pulses_per_rev(4, 4), Some(2.0));
+        assert_eq!(derive_pulses_per_rev(4, 1), Some(0.5));
+    }
+
+    #[test]
+    fn derive_pulses_per_rev_two_stroke_matches_cylinder_count() {
+        assert_eq!(derive_pulses_per_rev(2, 1), Some(1.0));
+        assert_eq!(derive_pulses_per_rev(2, 3), Some(3.0));
+    }
+
+    #[test]
+    fn derive_pulses_per_rev_rejects_invalid_stroke_or_zero_cylinders() {
+        assert_eq!(derive_pulses_per_rev(3, 4), None);
+        assert_eq!(derive_pulses_per_rev(4, 0), None);
+    }
+
+    #[test]
+    fn normalized_derives_scale_from_stroke_and_cylinders_when_hint_absent() {
+        let mut input = sample_input();
+        input.engine_pulses_per_rev_hint = None;
+        input.engine_rpm_scale = None;
+        input.engine_stroke = Some(4);
+        input.engine_cylinders = Some(4);
+
+        let normalized = input.normalized();
+        // 4-stroke, 4 cylinders -> ppr = 2.0 -> scale = 1/2.0
+        assert_eq!(normalized.engine_rpm_scale, Some(0.5));
+    }
+
+    #[test]
+    fn normalized_hint_overrides_derived_stroke_cylinders_scale() {
+        let mut input = sample_input();
+        input.engine_pulses_per_rev_hint = Some(1.0);
+        input.engine_rpm_scale = None;
+        input.engine_stroke = Some(4);
+        input.engine_cylinders = Some(4);
+
+        let normalized = input.normalized();
+        // Hint (1.0) wins over the stroke/cylinder derivation (2.0).
+        assert_eq!(normalized.engine_rpm_scale, Some(1.0));
+    }
+
+    #[test]
+    fn normalized_leaves_scale_untouched_when_stroke_and_cylinders_unset() {
+        let mut input = sample_input();
+        input.engine_pulses_per_rev_hint = None;
+        input.engine_rpm_scale = None;
+        input.engine_stroke = None;
+        input.engine_cylinders = None;
+
+        let normalized = input.normalized();
+        assert_eq!(normalized.engine_rpm_scale, None);
+    }
+
+    #[test]
+    fn engine_stroke_and_cylinders_must_be_set_together() {
+        let mut profile = sample_profile();
+        profile.engine_stroke = Some(4);
+        profile.engine_cylinders = None;
+
+        let validation = validate_profile(&profile);
+        assert!(!validation.is_valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|e| e.contains("must be set together")));
+    }
+
+    #[test]
+    fn engine_stroke_must_be_two_or_four() {
+        let mut profile = sample_profile();
+        profile.engine_stroke = Some(3);
+        profile.engine_cylinders = Some(4);
+
+        let validation = validate_profile(&profile);
+        assert!(!validation.is_valid);
+        assert!(validation.errors.iter().any(|e| e.contains("must be 2 or 4")));
+    }
+
+    #[test]
+    fn engine_cylinders_out_of_range_fails_validation() {
+        let mut profile = sample_profile();
+        profile.engine_stroke = Some(4);
+        profile.engine_cylinders = Some(20);
+
+        let validation = validate_profile(&profile);
+        assert!(!validation.is_valid);
+        assert!(validation
+            .errors
+            .iter()
+            .any(|e| e.contains("engine_cylinders")));
     }
 }

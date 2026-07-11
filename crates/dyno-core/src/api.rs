@@ -94,6 +94,12 @@ pub struct RunDetailDto {
     pub encoder_pulses_per_rev: f32,
     pub roller_inertia_kg_m2: f32,
     pub sample_window_ms: u32,
+    /// Engine config snapshotted from the active calibration profile at run
+    /// creation.
+    pub engine_pulses_per_rev_hint: Option<f32>,
+    pub engine_rpm_scale: Option<f32>,
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
     pub peak_power_hp: f32,
     pub peak_power_rpm: f32,
     pub peak_torque_nm: f32,
@@ -212,6 +218,8 @@ pub struct CalibrationProfileDto {
     pub sample_window_ms: u64,
     pub engine_pulses_per_rev_hint: Option<f32>,
     pub engine_rpm_scale: Option<f32>,
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
     pub notes: Option<String>,
 }
 
@@ -229,6 +237,8 @@ pub struct CalibrationUpsertRequestDto {
     pub sample_window_ms: u64,
     pub engine_pulses_per_rev_hint: Option<f32>,
     pub engine_rpm_scale: Option<f32>,
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
     pub notes: Option<String>,
     pub activate_after_save: Option<bool>,
 }
@@ -735,6 +745,8 @@ async fn update_calibration_profile(
         sample_window_ms: payload.sample_window_ms.unwrap_or(existing.sample_window_ms),
         engine_pulses_per_rev_hint: payload.engine_pulses_per_rev_hint.or(existing.engine_pulses_per_rev_hint),
         engine_rpm_scale: payload.engine_rpm_scale.or(existing.engine_rpm_scale),
+        engine_stroke: payload.engine_stroke.or(existing.engine_stroke),
+        engine_cylinders: payload.engine_cylinders.or(existing.engine_cylinders),
         notes: payload.notes.or(existing.notes),
     };
 
@@ -1124,22 +1136,21 @@ async fn setup_password_handler(
     State(state): State<ApiState>,
     Json(request): Json<SetupPasswordRequestDto>,
 ) -> Result<Json<SetupPasswordResponseDto>, ApiError> {
-    let already_set = state
+    validate_new_password(&request.new_password)?;
+    // Atomic check-and-set — avoids the TOCTOU window of a separate
+    // `is_system_password_set` + `set_system_password` pair, where a
+    // concurrent setup request could slip in between the check and the
+    // write and get silently overwritten.
+    let newly_set = state
         .storage
-        .is_system_password_set()
+        .set_system_password_if_absent(&request.new_password)
         .await
         .map_err(ApiError::Internal)?;
-    if already_set {
+    if !newly_set {
         return Err(ApiError::Conflict(
             "system password is already set; use /api/system/password to change it".to_owned(),
         ));
     }
-    validate_new_password(&request.new_password)?;
-    state
-        .storage
-        .set_system_password(&request.new_password)
-        .await
-        .map_err(ApiError::Internal)?;
     let _ = state
         .audit_logger
         .log(AuditEvent::PasswordInitialized, None, serde_json::json!({}))
@@ -1487,6 +1498,8 @@ fn calibration_profile_input(request: &CalibrationUpsertRequestDto) -> Calibrati
         sample_window_ms: request.sample_window_ms,
         engine_pulses_per_rev_hint: request.engine_pulses_per_rev_hint,
         engine_rpm_scale: request.engine_rpm_scale,
+        engine_stroke: request.engine_stroke,
+        engine_cylinders: request.engine_cylinders,
         notes: request.notes.clone(),
     }
 }
@@ -1504,6 +1517,8 @@ fn calibration_profile_dto(profile: CalibrationProfile) -> CalibrationProfileDto
         sample_window_ms: profile.sample_window_ms,
         engine_pulses_per_rev_hint: profile.engine_pulses_per_rev_hint,
         engine_rpm_scale: profile.engine_rpm_scale,
+        engine_stroke: profile.engine_stroke,
+        engine_cylinders: profile.engine_cylinders,
         notes: profile.notes,
     }
 }
@@ -1592,6 +1607,10 @@ fn run_detail_dto(run: StoredRun) -> RunDetailDto {
         encoder_pulses_per_rev: run.encoder_pulses_per_rev,
         roller_inertia_kg_m2: run.roller_inertia_kg_m2,
         sample_window_ms: run.sample_window_ms,
+        engine_pulses_per_rev_hint: run.engine_pulses_per_rev_hint,
+        engine_rpm_scale: run.engine_rpm_scale,
+        engine_stroke: run.engine_stroke,
+        engine_cylinders: run.engine_cylinders,
         peak_power_hp: run.peak_power_hp,
         peak_power_rpm: run.peak_power_rpm,
         peak_torque_nm: run.peak_torque_nm,
@@ -1866,7 +1885,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         )
     }
 
@@ -1896,7 +1915,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         )
         .await
         .expect("spawn api task");
@@ -1934,7 +1953,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         )
         .await;
         assert!(result.is_err());
@@ -1962,7 +1981,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         );
 
         let response = app
@@ -2109,7 +2128,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         );
 
         let stop_response = app
@@ -2304,7 +2323,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         );
 
         let request = Request::builder()
@@ -2388,7 +2407,7 @@ mod tests {
             CalibrationLock::new(),
             audit_logger,
             config,
-            crate::serial_gate::serial_gate(false).0,
+            crate::serial_gate::serial_gate().0,
         );
 
         let request = Request::builder()
@@ -2438,6 +2457,8 @@ mod tests {
                     sample_window_ms: 90,
                     engine_pulses_per_rev_hint: Some(1.0),
                     engine_rpm_scale: Some(1.0),
+                    engine_stroke: None,
+                    engine_cylinders: None,
                     notes: Some("new profile".to_owned()),
                     activate_after_save: Some(false),
                 })
@@ -2482,6 +2503,8 @@ mod tests {
                     sample_window_ms: 90,
                     engine_pulses_per_rev_hint: Some(1.0),
                     engine_rpm_scale: Some(1.0),
+                    engine_stroke: None,
+                    engine_cylinders: None,
                     notes: None,
                     activate_after_save: Some(false),
                 })
@@ -2524,6 +2547,8 @@ mod tests {
                     sample_window_ms: 110,
                     engine_pulses_per_rev_hint: Some(1.0),
                     engine_rpm_scale: Some(1.0),
+                    engine_stroke: None,
+                    engine_cylinders: None,
                     notes: Some("updated".to_owned()),
                     activate_after_save: Some(false),
                 })
@@ -3095,10 +3120,12 @@ mod tests {
         let config = test_config(":memory:");
         let health = collect_startup_health(&config);
         let audit_logger = AuditLogger::new(storage.clone());
-        // `actual` starts (and stays) released=false — i.e. the reader is
-        // reported as holding the port, and nothing ever flips it — so the
-        // suspend request must time out.
-        let (serial_gate, _worker) = crate::serial_gate::serial_gate(true);
+        // The gate seeds `actual=false`, but this test models a reader that
+        // has already opened the port and never releases it, so publish
+        // `actual=true` and keep `_worker`'s sender alive for the rest of
+        // the test — the suspend request must then time out.
+        let (serial_gate, _worker) = crate::serial_gate::serial_gate();
+        _worker.publish_actual(true);
         let app = router(
             storage,
             calibration_tx,

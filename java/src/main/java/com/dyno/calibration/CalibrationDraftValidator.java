@@ -31,6 +31,9 @@ public final class CalibrationDraftValidator {
     private static final double ENGINE_RPM_SCALE_WARNING_MAX = 10.0;
     private static final double ENGINE_RPM_SCALE_HARD_MAX = 100.0;
 
+    private static final int ENGINE_CYLINDERS_MIN = 1;
+    private static final int ENGINE_CYLINDERS_MAX = 12;
+
     private CalibrationDraftValidator() {
     }
 
@@ -61,8 +64,26 @@ public final class CalibrationDraftValidator {
             warnings,
             errors
         );
+        validateEngineStrokeAndCylinders(
+            request == null ? null : request.getEngineStroke(),
+            request == null ? null : request.getEngineCylinders(),
+            errors
+        );
 
         return CalibrationValidationDto.of(errors.isEmpty(), warnings, errors);
+    }
+
+    private static void validateEngineStrokeAndCylinders(Integer stroke, Integer cylinders, List<String> errors) {
+        if (stroke != null && stroke.intValue() != 2 && stroke.intValue() != 4) {
+            errors.add("engine_stroke: must be 2 or 4 when provided");
+        }
+        if (cylinders != null
+            && (cylinders.intValue() < ENGINE_CYLINDERS_MIN || cylinders.intValue() > ENGINE_CYLINDERS_MAX)) {
+            errors.add("engine_cylinders: must be between " + ENGINE_CYLINDERS_MIN + " and " + ENGINE_CYLINDERS_MAX + " when provided");
+        }
+        if ((stroke == null) != (cylinders == null)) {
+            errors.add("engine_stroke: engine_stroke and engine_cylinders must be set together");
+        }
     }
 
     private static void validateName(String value, List<String> errors) {

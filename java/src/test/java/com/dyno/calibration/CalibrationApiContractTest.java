@@ -104,6 +104,8 @@ public final class CalibrationApiContractTest {
             Long.valueOf(100L),
             Double.valueOf(1.0),
             Double.valueOf(1.0),
+            null,
+            null,
             "baseline",
             Boolean.TRUE
         ));
@@ -262,6 +264,8 @@ public final class CalibrationApiContractTest {
                 Double.valueOf(60.0),
                 Double.valueOf(3.5),
                 Long.valueOf(100L),
+                null,
+                null,
                 null,
                 null,
                 null,
