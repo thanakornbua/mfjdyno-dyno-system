@@ -172,7 +172,7 @@ public final class DynoPdfExporter {
         doc.add(vSpacer(6));
 
         // Ambient conditions from peak-power frame
-        RunHistoryFrameDto peakFrame = RunMetrics.peakPowerFrame(frames);
+        RunHistoryFrameDto peakFrame = RunMetrics.frameAtPeakPower(detail, frames);
         if (peakFrame != null) {
             doc.add(buildAmbientTable(peakFrame, font));
             doc.add(vSpacer(6));
@@ -435,11 +435,8 @@ public final class DynoPdfExporter {
 
     private static Table buildPeakTable(RunHistoryDetailDto d, List<RunHistoryFrameDto> frames, PdfFont font) {
         Table t = twoCol();
-        RunHistoryFrameDto peakPowerFrame = RunMetrics.peakPowerFrame(frames);
-        Double peakPowerHp = peakPowerFrame == null ? d.getPeakPowerHp() : peakPowerFrame.getPowerHp();
-        Double peakPowerRpm = peakPowerFrame == null ? d.getPeakPowerRpm() : peakPowerFrame.getEngineRpm();
         row(t, LBL_PEAK_POWER,
-            fmtN(peakPowerHp, "HP") + "  @  " + fmtN(peakPowerRpm, "RPM"), font);
+            fmtN(d.getPeakPowerHp(), "HP") + "  @  " + fmtN(d.getPeakPowerRpm(), "RPM"), font);
         row(t, LBL_PEAK_TORQUE,
             fmtN(d.getPeakTorqueNm(), "Nm") + "  @  " + fmtN(d.getPeakTorqueRpm(), "RPM"), font);
         return t;
@@ -461,16 +458,15 @@ public final class DynoPdfExporter {
         PdfFont font
     ) {
         Table t = twoCol();
-        RunHistoryFrameDto peakPowerFrame = RunMetrics.peakPowerFrame(frames);
-        RunHistoryFrameDto peakTorqueFrame = peakTorqueFrame(frames);
+        RunHistoryFrameDto peakPowerFrame = RunMetrics.frameAtPeakPower(detail, frames);
         RunHistoryFrameDto ambientFrame = peakPowerFrame != null ? peakPowerFrame : firstFrame(frames);
 
         row(t, "{TEST_NAME}", safe(testName), font);
         row(t, "{COMMENT}", commentText(detail), font);
-        row(t, "{PEAK_POWER_PS}", fmtN(ps(peakPowerFrame == null ? detailPeakPowerHp(detail) : peakPowerFrame.getPowerHp()), "PS"), font);
-        row(t, "{PEAK_POWER_RPM}", fmtN(peakPowerFrame == null ? detailPeakPowerRpm(detail) : peakPowerFrame.getEngineRpm(), "RPM"), font);
-        row(t, "{PEAK_TORQUE_NM}", fmtN(peakTorqueFrame == null ? detailPeakTorqueNm(detail) : peakTorqueFrame.getTorqueNm(), "Nm"), font);
-        row(t, "{PEAK_TORQUE_RPM}", fmtN(peakTorqueFrame == null ? detailPeakTorqueRpm(detail) : peakTorqueFrame.getEngineRpm(), "RPM"), font);
+        row(t, "{PEAK_POWER_PS}", fmtN(ps(detailPeakPowerHp(detail)), "PS"), font);
+        row(t, "{PEAK_POWER_RPM}", fmtN(detailPeakPowerRpm(detail), "RPM"), font);
+        row(t, "{PEAK_TORQUE_NM}", fmtN(detailPeakTorqueNm(detail), "Nm"), font);
+        row(t, "{PEAK_TORQUE_RPM}", fmtN(detailPeakTorqueRpm(detail), "RPM"), font);
         row(t, "{CORR_VALUE}", correctionPercent(ambientFrame), font);
         row(t, "{AMB_TEMP_C}", fmtN(ambientFrame == null ? null : ambientFrame.getAmbientTempC(), "°C"), font);
         row(t, "{AMB_PRESS_KPA}", fmtN(kpa(ambientFrame == null ? null : ambientFrame.getPressureHpa()), "kPa"), font);
@@ -490,15 +486,10 @@ public final class DynoPdfExporter {
         for (int i = 0; i < runs.size(); i++) {
             ComparedRunDto run = runs.get(i);
             RunHistoryDetailDto detail = run.getRun();
-            List<RunHistoryFrameDto> frames = run.getFrames() == null
-                ? Collections.<RunHistoryFrameDto>emptyList()
-                : run.getFrames();
-            RunHistoryFrameDto peakPowerFrame = RunMetrics.peakPowerFrame(frames);
-            RunHistoryFrameDto peakTorqueFrame = peakTorqueFrame(frames);
             dataCell(t, runLabel(detail), font);
             dataCell(t, commentText(detail), font);
-            dataCell(t, fmtN(ps(peakPowerFrame == null ? detailPeakPowerHp(detail) : peakPowerFrame.getPowerHp()), "PS"), font);
-            dataCell(t, fmtN(peakTorqueFrame == null ? detailPeakTorqueNm(detail) : peakTorqueFrame.getTorqueNm(), "Nm"), font);
+            dataCell(t, fmtN(ps(detailPeakPowerHp(detail)), "PS"), font);
+            dataCell(t, fmtN(detailPeakTorqueNm(detail), "Nm"), font);
             dataCell(t, speedRatioText(detail), font);
         }
         return t;
@@ -624,14 +615,12 @@ public final class DynoPdfExporter {
         // Data rows (lambda-free, compatible with Java 8 source / Java 21 target)
         cmpRow(t, LBL_CMP_POWER, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                RunHistoryFrameDto pk = CompareDisplayMapper.peakPowerFrame(r);
-                return fmtN(pk == null ? null : pk.getPowerHp(), "HP");
+                return r.getRun() == null ? "—" : fmtN(r.getRun().getPeakPowerHp(), "HP");
             }
         });
         cmpRow(t, LBL_CMP_PWR_RPM, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                RunHistoryFrameDto pk = CompareDisplayMapper.peakPowerFrame(r);
-                return fmtN(pk == null ? null : pk.getEngineRpm(), "RPM");
+                return r.getRun() == null ? "—" : fmtN(r.getRun().getPeakPowerRpm(), "RPM");
             }
         });
         cmpRow(t, LBL_CMP_TORQUE, runs, font, new CmpFn() {
@@ -658,13 +647,13 @@ public final class DynoPdfExporter {
         });
         cmpRow(t, LBL_CMP_AFR, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                RunHistoryFrameDto pk = CompareDisplayMapper.peakPowerFrame(r);
+                RunHistoryFrameDto pk = CompareDisplayMapper.frameAtPeakPower(r);
                 return fmtN(CompareDisplayMapper.frameValue(pk, CompareDisplayMapper.Metric.AFR), "");
             }
         });
         cmpRow(t, LBL_CMP_AMBIENT, runs, font, new CmpFn() {
             public String get(ComparedRunDto r) {
-                return CompareDisplayMapper.ambientText(CompareDisplayMapper.peakPowerFrame(r));
+                return CompareDisplayMapper.ambientText(CompareDisplayMapper.frameAtPeakPower(r));
             }
         });
         return t;
@@ -1083,29 +1072,6 @@ public final class DynoPdfExporter {
             }
         }
         return null;
-    }
-
-    private static RunHistoryFrameDto peakTorqueFrame(List<RunHistoryFrameDto> frames) {
-        if (frames == null) {
-            return null;
-        }
-        RunHistoryFrameDto best = null;
-        double bestTorque = Double.NEGATIVE_INFINITY;
-        for (int i = 0; i < frames.size(); i++) {
-            RunHistoryFrameDto frame = frames.get(i);
-            if (frame == null || frame.getTorqueNm() == null) {
-                continue;
-            }
-            double torque = frame.getTorqueNm().doubleValue();
-            if (torque < 0.0d) {
-                continue;
-            }
-            if (best == null || torque > bestTorque) {
-                best = frame;
-                bestTorque = torque;
-            }
-        }
-        return best;
     }
 
     private static List<RunHistoryFrameDto> rpmSweepFrames(List<RunHistoryFrameDto> frames) {

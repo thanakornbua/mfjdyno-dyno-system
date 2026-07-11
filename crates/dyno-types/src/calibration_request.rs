@@ -14,6 +14,8 @@ pub struct UpdateCalibrationProfileRequest {
     pub sample_window_ms: Option<u64>,
     pub engine_pulses_per_rev_hint: Option<f32>,
     pub engine_rpm_scale: Option<f32>,
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
     pub notes: Option<String>,
     pub activate_after_save: Option<bool>,
 }

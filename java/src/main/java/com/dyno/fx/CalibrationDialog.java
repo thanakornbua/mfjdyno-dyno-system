@@ -8,6 +8,7 @@ import com.dyno.calibration.CalibrationResponseDto;
 import com.dyno.calibration.CalibrationUpsertRequestDto;
 import com.dyno.calibration.CalibrationValidationDto;
 import com.dyno.calibration.DuplicateCalibrationProfileRequestDto;
+import com.dyno.calibration.RollerInertiaCalculator;
 import com.dyno.presenter.OperatorViewModel;
 import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyStringWrapper;
@@ -15,16 +16,19 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Node;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
@@ -36,12 +40,15 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Modality;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 
 import java.io.IOException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -86,8 +93,18 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
     private final TextField sampleWindowInput = new TextField();
     private final TextField enginePulsesHintInput = new TextField();
     private final TextField engineRpmScaleInput = new TextField();
+    private final ChoiceBox<String> engineStrokeInput = new ChoiceBox<String>(FXCollections.observableArrayList("", "2", "4"));
+    private final TextField engineCylindersInput = new TextField();
+    private final Label derivedEngineScaleLabel = new Label();
     private final TextArea notesInput = new TextArea();
     private final CheckBox activateAfterSaveInput = new CheckBox(UiText.text("Activate after save"));
+
+    private final ObservableList<RollerRow> rollerRows = FXCollections.observableArrayList();
+    private final VBox rollerRowsBox = new VBox(FxTheme.GAP_S);
+    private final Label rollerTotalLabel = new Label();
+    private final Label rollerErrorsLabel = new Label();
+    private final Button addRollerButton = new Button(UiText.text("ADD ROLLER"));
+    private final Button applyRollerInertiaButton = new Button(UiText.text("APPLY TO INERTIA FIELD"));
 
     private final Label lockStatusLabel = new Label();
     private final Button lockButton = new Button(UiText.text("LOCK"));
@@ -123,6 +140,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         DialogPane pane = getDialogPane();
         pane.getButtonTypes().addAll(activateType, ButtonType.CLOSE);
         pane.setContent(buildContent());
+        capHeightToVisualBounds();
 
         installProfileColumns();
         installEventColumns();
@@ -158,6 +176,17 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         return result.orElse(null);
     }
 
+    /** Bounds the dialog to the display's visual area so the ScrollPane engages on small screens (e.g. the deployment Pi). */
+    private void capHeightToVisualBounds() {
+        setOnShowing(event -> {
+            Window window = getDialogPane().getScene() == null ? null : getDialogPane().getScene().getWindow();
+            if (window instanceof Stage) {
+                Rectangle2D visualBounds = Screen.getPrimary().getVisualBounds();
+                ((Stage) window).setMaxHeight(visualBounds.getHeight() - FxTheme.GAP_M * 4);
+            }
+        });
+    }
+
     private Node buildContent() {
         Label title = new Label(UiText.text("CALIBRATION PROFILES"));
         title.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
@@ -168,6 +197,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         lockBar = buildLockBar();
         VBox activeBox = titledCard(UiText.text("ACTIVE PROFILE"), activeNameLabel, activeDetailsLabel, activeValidationLabel);
         VBox formBox = buildFormBox();
+        VBox rollerInertiaBox = buildRollerInertiaCalculatorBox();
         VBox auditBox = buildAuditBox();
 
         table.setMinWidth(920);
@@ -185,10 +215,18 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         statusLabel.setTextFill(FxTheme.TEXT_MUTED);
 
         HBox actions = new HBox(FxTheme.GAP_S, createNewButton, saveButton, duplicateButton);
-        VBox box = new VBox(FxTheme.GAP_M, title, note, lockBar, activeBox, table, actions, formBox, auditBox, runtimeNoteLabel, statusLabel);
+        VBox box = new VBox(
+            FxTheme.GAP_M, title, note, lockBar, activeBox, table, actions, formBox,
+            rollerInertiaBox, auditBox, runtimeNoteLabel, statusLabel
+        );
         box.setPadding(FxTheme.PAD_DIALOG);
         VBox.setVgrow(table, Priority.ALWAYS);
-        return box;
+
+        ScrollPane scrollPane = new ScrollPane(box);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        return scrollPane;
     }
 
     private HBox buildLockBar() {
@@ -217,10 +255,13 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         grid.addRow(2, new Label(UiText.text("Pulses / rev")), pulsesPerRevInput);
         grid.addRow(3, new Label(UiText.text("Inertia (kg·m²)")), inertiaInput);
         grid.addRow(4, new Label(UiText.text("Sample window (ms)")), sampleWindowInput);
-        grid.addRow(5, new Label(UiText.text("Engine pulses hint")), enginePulsesHintInput);
+        grid.addRow(5, new Label(UiText.text("Engine pulses hint (override)")), enginePulsesHintInput);
         grid.addRow(6, new Label(UiText.text("Engine RPM scale")), engineRpmScaleInput);
-        grid.addRow(7, new Label(UiText.text("Notes")), notesInput);
-        grid.add(activateAfterSaveInput, 1, 8);
+        grid.addRow(7, new Label(UiText.text("Engine stroke")), engineStrokeInput);
+        grid.addRow(8, new Label(UiText.text("Engine cylinders")), engineCylindersInput);
+        grid.addRow(9, new Label(UiText.text("Derived pulses/rev · scale")), derivedEngineScaleLabel);
+        grid.addRow(10, new Label(UiText.text("Notes")), notesInput);
+        grid.add(activateAfterSaveInput, 1, 11);
         GridPane.setHgrow(nameInput, Priority.ALWAYS);
         GridPane.setHgrow(rollerDiameterInput, Priority.ALWAYS);
         GridPane.setHgrow(pulsesPerRevInput, Priority.ALWAYS);
@@ -228,7 +269,11 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         GridPane.setHgrow(sampleWindowInput, Priority.ALWAYS);
         GridPane.setHgrow(enginePulsesHintInput, Priority.ALWAYS);
         GridPane.setHgrow(engineRpmScaleInput, Priority.ALWAYS);
+        GridPane.setHgrow(engineStrokeInput, Priority.ALWAYS);
+        GridPane.setHgrow(engineCylindersInput, Priority.ALWAYS);
         GridPane.setHgrow(notesInput, Priority.ALWAYS);
+        derivedEngineScaleLabel.setTextFill(FxTheme.TEXT_MUTED);
+        engineStrokeInput.setValue("");
 
         return titledCard(
             UiText.text("PROFILE FORM"),
@@ -239,6 +284,131 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             warningLabel,
             errorLabel
         );
+    }
+
+    /**
+     * Session-only helper: lets the operator sum the inertia of multiple
+     * rollers (hollow cylinders) on a shared shaft and push the total into
+     * the {@code inertiaInput} field above, which is what actually gets
+     * saved. Row values themselves are never persisted.
+     */
+    private VBox buildRollerInertiaCalculatorBox() {
+        rollerTotalLabel.setStyle("-fx-font-weight: bold;");
+        rollerErrorsLabel.setWrapText(true);
+        rollerErrorsLabel.setTextFill(FxTheme.ALERT);
+
+        GridPane header = new GridPane();
+        header.setHgap(FxTheme.GAP_S);
+        header.addRow(0,
+            new Label(UiText.text("Mass (kg)")),
+            new Label(UiText.text("Outer radius (m)")),
+            new Label(UiText.text("Inner radius (m)")),
+            new Label("")
+        );
+
+        addRollerButton.setOnAction(event -> {
+            rollerRows.add(new RollerRow());
+            renderRollerRows();
+        });
+        applyRollerInertiaButton.setOnAction(event -> {
+            List<RollerInertiaCalculator.Cylinder> cylinders = collectCylinders();
+            if (!RollerInertiaCalculator.validateAll(cylinders).isEmpty()) {
+                return;
+            }
+            inertiaInput.setText(numberText(Double.valueOf(RollerInertiaCalculator.totalInertia(cylinders))));
+            refreshView(null, null);
+        });
+
+        HBox actions = new HBox(FxTheme.GAP_S, addRollerButton, applyRollerInertiaButton);
+        VBox box = titledCard(
+            UiText.text("ROLLER INERTIA CALCULATOR"),
+            header,
+            rollerRowsBox,
+            actions,
+            rollerErrorsLabel,
+            rollerTotalLabel
+        );
+        renderRollerRows();
+        return box;
+    }
+
+    private void renderRollerRows() {
+        rollerRowsBox.getChildren().clear();
+        for (RollerRow row : rollerRows) {
+            rollerRowsBox.getChildren().add(row.buildRow());
+        }
+        recomputeRollerTotal();
+    }
+
+    private void recomputeRollerTotal() {
+        List<RollerInertiaCalculator.Cylinder> cylinders = collectCylinders();
+        List<String> errors = RollerInertiaCalculator.validateAll(cylinders);
+        if (!errors.isEmpty()) {
+            rollerErrorsLabel.setText(String.join("\n", errors));
+            rollerTotalLabel.setText(UiText.text("Total inertia: —"));
+            applyRollerInertiaButton.setDisable(true);
+            return;
+        }
+        rollerErrorsLabel.setText("");
+        double total = RollerInertiaCalculator.totalInertia(cylinders);
+        rollerTotalLabel.setText(UiText.text("Total inertia: ") + formatDouble(Double.valueOf(total), 4, "kg·m²"));
+        applyRollerInertiaButton.setDisable(cylinders.isEmpty());
+    }
+
+    private List<RollerInertiaCalculator.Cylinder> collectCylinders() {
+        List<RollerInertiaCalculator.Cylinder> cylinders = new ArrayList<RollerInertiaCalculator.Cylinder>();
+        for (RollerRow row : rollerRows) {
+            cylinders.add(row.toCylinder());
+        }
+        return cylinders;
+    }
+
+    /** One editable mass/outer-radius/inner-radius row in the calculator table. */
+    private final class RollerRow {
+        private final TextField massInput = new TextField();
+        private final TextField outerRadiusInput = new TextField();
+        private final TextField innerRadiusInput = new TextField();
+
+        private HBox buildRow() {
+            massInput.setPromptText(UiText.text("Mass (kg)"));
+            outerRadiusInput.setPromptText(UiText.text("Outer radius (m)"));
+            innerRadiusInput.setPromptText(UiText.text("Inner radius (m)"));
+            massInput.textProperty().addListener((obs, oldValue, newValue) -> recomputeRollerTotal());
+            outerRadiusInput.textProperty().addListener((obs, oldValue, newValue) -> recomputeRollerTotal());
+            innerRadiusInput.textProperty().addListener((obs, oldValue, newValue) -> recomputeRollerTotal());
+
+            Button removeButton = new Button(UiText.text("REMOVE"));
+            removeButton.setOnAction(event -> {
+                rollerRows.remove(this);
+                renderRollerRows();
+            });
+
+            HBox row = new HBox(FxTheme.GAP_S, massInput, outerRadiusInput, innerRadiusInput, removeButton);
+            HBox.setHgrow(massInput, Priority.ALWAYS);
+            HBox.setHgrow(outerRadiusInput, Priority.ALWAYS);
+            HBox.setHgrow(innerRadiusInput, Priority.ALWAYS);
+            return row;
+        }
+
+        private RollerInertiaCalculator.Cylinder toCylinder() {
+            return new RollerInertiaCalculator.Cylinder(
+                parseFieldDouble(massInput.getText()),
+                parseFieldDouble(outerRadiusInput.getText()),
+                parseFieldDouble(innerRadiusInput.getText())
+            );
+        }
+
+        private double parseFieldDouble(String raw) {
+            String text = normalizeText(raw);
+            if (text.isEmpty()) {
+                return 0.0;
+            }
+            try {
+                return Double.parseDouble(text);
+            } catch (NumberFormatException error) {
+                return Double.NaN;
+            }
+        }
     }
 
     private VBox buildAuditBox() {
@@ -331,7 +501,9 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         installFormRefresh(sampleWindowInput);
         installFormRefresh(enginePulsesHintInput);
         installFormRefresh(engineRpmScaleInput);
+        installFormRefresh(engineCylindersInput);
         installFormRefresh(notesInput);
+        engineStrokeInput.valueProperty().addListener((obs, oldValue, newValue) -> refreshView(null, null));
         activateAfterSaveInput.selectedProperty().addListener((obs, oldValue, newValue) -> refreshView(null, null));
 
         Node activateNode = getDialogPane().lookupButton(activateType);
@@ -688,6 +860,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
 
     private void updateActionState() {
         ParsedForm parsed = parseForm();
+        updateDerivedEngineScaleLabel(parsed.request);
         boolean hasSelected = hasSelectedProfile();
         boolean formEditable = !busy && !calibrationLocked && (createMode || hasSelected);
 
@@ -698,6 +871,8 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         sampleWindowInput.setDisable(!formEditable);
         enginePulsesHintInput.setDisable(!formEditable);
         engineRpmScaleInput.setDisable(!formEditable);
+        engineStrokeInput.setDisable(!formEditable);
+        engineCylindersInput.setDisable(!formEditable);
         notesInput.setDisable(!formEditable);
         activateAfterSaveInput.setDisable(!formEditable);
 
@@ -740,6 +915,10 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         Long sampleWindow = parseRequiredLong(sampleWindowInput.getText(), "sample_window_ms");
         Double enginePulsesHint = parseOptionalDouble(enginePulsesHintInput.getText(), "engine_pulses_per_rev_hint");
         Double engineRpmScale = parseOptionalDouble(engineRpmScaleInput.getText(), "engine_rpm_scale");
+        Integer engineStroke = emptyToNull(engineStrokeInput.getValue()) == null
+            ? null
+            : Integer.valueOf(engineStrokeInput.getValue());
+        Integer engineCylinders = parseOptionalInt(engineCylindersInput.getText(), "engine_cylinders");
         String notes = normalizeOptionalText(notesInput.getText());
 
         CalibrationValidationDto parseValidation = CalibrationValidationDto.of(true, Collections.<String>emptyList(), Collections.<String>emptyList());
@@ -751,6 +930,8 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             sampleWindow,
             enginePulsesHint,
             engineRpmScale,
+            engineStroke,
+            engineCylinders,
             notes,
             Boolean.valueOf(activateAfterSaveInput.isSelected())
         );
@@ -773,6 +954,8 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             profile.getSampleWindowMs(),
             profile.getEnginePulsesPerRevHint(),
             profile.getEngineRpmScale(),
+            profile.getEngineStroke(),
+            profile.getEngineCylinders(),
             profile.getNotes(),
             Boolean.FALSE
         );
@@ -796,6 +979,8 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         sampleWindowInput.setText("");
         enginePulsesHintInput.setText("");
         engineRpmScaleInput.setText("");
+        engineStrokeInput.setValue("");
+        engineCylindersInput.setText("");
         notesInput.setText("");
         activateAfterSaveInput.setSelected(true);
         clearEventRows();
@@ -813,6 +998,8 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         sampleWindowInput.setText(profile.getSampleWindowMs() == null ? "" : String.valueOf(profile.getSampleWindowMs().longValue()));
         enginePulsesHintInput.setText(numberText(profile.getEnginePulsesPerRevHint()));
         engineRpmScaleInput.setText(numberText(profile.getEngineRpmScale()));
+        engineStrokeInput.setValue(profile.getEngineStroke() == null ? "" : String.valueOf(profile.getEngineStroke()));
+        engineCylindersInput.setText(profile.getEngineCylinders() == null ? "" : String.valueOf(profile.getEngineCylinders()));
         notesInput.setText(profile.getNotes() == null ? "" : profile.getNotes());
         activateAfterSaveInput.setSelected(Boolean.TRUE.equals(profile.getActive()));
     }
@@ -998,6 +1185,57 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         } catch (NumberFormatException error) {
             return Long.valueOf(-1L);
         }
+    }
+
+    private Integer parseOptionalInt(String raw, String fieldName) {
+        String text = normalizeText(raw);
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(Integer.parseInt(text));
+        } catch (NumberFormatException error) {
+            return Integer.valueOf(-1);
+        }
+    }
+
+    private String emptyToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value.trim();
+    }
+
+    /**
+     * Read-only preview of the effective pulses-per-rev / engine RPM scale
+     * so the operator can sanity-check the derivation before saving —
+     * mirrors {@code derive_pulses_per_rev} in the Rust backend
+     * (crates/dyno-core/src/calibration.rs).
+     */
+    private void updateDerivedEngineScaleLabel(CalibrationUpsertRequestDto request) {
+        if (request == null) {
+            derivedEngineScaleLabel.setText("—");
+            return;
+        }
+        Double hint = request.getEnginePulsesPerRevHint();
+        Integer stroke = request.getEngineStroke();
+        Integer cylinders = request.getEngineCylinders();
+
+        Double effectivePpr = hint;
+        if (effectivePpr == null && stroke != null && cylinders != null && cylinders.intValue() > 0) {
+            if (stroke.intValue() == 4) {
+                effectivePpr = Double.valueOf(cylinders.doubleValue() / 2.0);
+            } else if (stroke.intValue() == 2) {
+                effectivePpr = Double.valueOf(cylinders.doubleValue());
+            }
+        }
+
+        if (effectivePpr == null || effectivePpr.doubleValue() <= 0.0) {
+            derivedEngineScaleLabel.setText(UiText.text("— (unset: no scaling applied)"));
+            return;
+        }
+        double scale = 1.0 / effectivePpr.doubleValue();
+        derivedEngineScaleLabel.setText(
+            numberText(effectivePpr) + " ppr · " + numberText(Double.valueOf(scale)) + "× scale"
+                + (hint != null ? " (from override hint)" : "")
+        );
     }
 
     private Throwable rootCause(Throwable throwable) {

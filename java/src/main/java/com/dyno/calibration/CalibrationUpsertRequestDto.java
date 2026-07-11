@@ -23,6 +23,12 @@ public final class CalibrationUpsertRequestDto {
     @JsonProperty("engine_rpm_scale")
     private final Double engineRpmScale;
 
+    @JsonProperty("engine_stroke")
+    private final Integer engineStroke;
+
+    @JsonProperty("engine_cylinders")
+    private final Integer engineCylinders;
+
     private final String notes;
 
     @JsonProperty("activate_after_save")
@@ -36,6 +42,8 @@ public final class CalibrationUpsertRequestDto {
         Long sampleWindowMs,
         Double enginePulsesPerRevHint,
         Double engineRpmScale,
+        Integer engineStroke,
+        Integer engineCylinders,
         String notes,
         Boolean activateAfterSave
     ) {
@@ -46,6 +54,8 @@ public final class CalibrationUpsertRequestDto {
         this.sampleWindowMs = sampleWindowMs;
         this.enginePulsesPerRevHint = enginePulsesPerRevHint;
         this.engineRpmScale = engineRpmScale;
+        this.engineStroke = engineStroke;
+        this.engineCylinders = engineCylinders;
         this.notes = notes;
         this.activateAfterSave = activateAfterSave;
     }
@@ -76,6 +86,14 @@ public final class CalibrationUpsertRequestDto {
 
     public Double getEngineRpmScale() {
         return engineRpmScale;
+    }
+
+    public Integer getEngineStroke() {
+        return engineStroke;
+    }
+
+    public Integer getEngineCylinders() {
+        return engineCylinders;
     }
 
     public String getNotes() {

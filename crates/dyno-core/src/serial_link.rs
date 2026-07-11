@@ -9,6 +9,12 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// Opening the port resets a UART0-connected ESP32 (DTR/RTS toggled by the
+/// tty driver). Give the boot ROM + sketch time to settle before the first
+/// command is sent, so `DEVICE_INFO_GET` doesn't race the reboot.
+const POST_OPEN_SETTLE: Duration = Duration::from_millis(1_500);
+const DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(50);
+
 use dyno_protocol::{
     CommandPacket, DynoConfig, DynoFrameV1, PacketDecodeStatus, PacketDecoder, WirePacket,
 };
@@ -25,8 +31,28 @@ pub struct DynoSerialLink<T> {
 }
 
 impl DynoUartLink {
-    pub fn open(path: &str, baud: u32) -> tokio_serial::Result<Self> {
-        Ok(Self::new(open_port(path, baud)?))
+    /// Open the port, then wait out the reset that opening a UART0-connected
+    /// ESP32 causes and discard the resulting boot-banner bytes, so the first
+    /// command sent isn't lost to a rebooting device.
+    pub async fn open(path: &str, baud: u32) -> tokio_serial::Result<Self> {
+        let mut port = open_port(path, baud)?;
+        tokio::time::sleep(POST_OPEN_SETTLE).await;
+        discard_buffered_input(&mut port).await?;
+        Ok(Self::new(port))
+    }
+}
+
+/// Drain and discard whatever bytes are currently sitting in the port's
+/// input buffer without blocking indefinitely: stop as soon as a short read
+/// yields nothing new.
+pub(crate) async fn discard_buffered_input(port: &mut tokio_serial::SerialStream) -> io::Result<()> {
+    let mut scratch = [0u8; 256];
+    loop {
+        match tokio::time::timeout(DRAIN_READ_TIMEOUT, port.read(&mut scratch)).await {
+            Ok(Ok(0)) | Err(_) => return Ok(()),
+            Ok(Ok(_)) => continue,
+            Ok(Err(e)) => return Err(e),
+        }
     }
 }
 

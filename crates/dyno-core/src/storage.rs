@@ -157,6 +157,13 @@ pub struct StoredRun {
     pub encoder_pulses_per_rev: f32,
     pub roller_inertia_kg_m2: f32,
     pub sample_window_ms: u32,
+    /// Engine config snapshotted from the active calibration profile at run
+    /// creation, so edits to the profile afterward don't change a
+    /// historical run's recorded engine setup.
+    pub engine_pulses_per_rev_hint: Option<f32>,
+    pub engine_rpm_scale: Option<f32>,
+    pub engine_stroke: Option<u8>,
+    pub engine_cylinders: Option<u8>,
     pub peak_power_hp: f32,
     pub peak_power_rpm: f32,
     pub peak_torque_nm: f32,
@@ -302,6 +309,11 @@ enum Command {
         key: String,
         value: String,
         reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    SetSettingIfAbsent {
+        key: String,
+        value: String,
+        reply: oneshot::Sender<anyhow::Result<bool>>,
     },
     Flush {
         reply: oneshot::Sender<anyhow::Result<()>>,
@@ -661,15 +673,62 @@ impl Storage {
             .context("storage worker dropped set-setting reply")?
     }
 
-    pub async fn get_system_password(&self) -> anyhow::Result<String> {
-        Ok(self
-            .get_setting("system_password")
-            .await?
-            .unwrap_or_else(|| "MFJ123456".to_owned()))
+    /// Returns `None` if no password has been set yet (first-boot state).
+    pub async fn get_system_password(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting("system_password").await
+    }
+
+    pub async fn is_system_password_set(&self) -> anyhow::Result<bool> {
+        Ok(self.get_system_password().await?.is_some())
     }
 
     pub async fn set_system_password(&self, new_password: &str) -> anyhow::Result<()> {
         self.set_setting("system_password", new_password).await
+    }
+
+    /// Atomically set `key` to `value` only if unset. Returns `true` if this
+    /// call set it, `false` if it was already set (left untouched).
+    pub async fn set_setting_if_absent(&self, key: &str, value: &str) -> anyhow::Result<bool> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::SetSettingIfAbsent {
+                key: key.to_owned(),
+                value: value.to_owned(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("storage worker is not running"))?;
+        reply_rx
+            .await
+            .context("storage worker dropped set-setting-if-absent reply")?
+    }
+
+    /// Set the system password only on first setup. Returns `true` if this
+    /// call set the password, `false` if one was already set — avoids the
+    /// check-then-set race between `is_system_password_set` and
+    /// `set_system_password`.
+    pub async fn set_system_password_if_absent(&self, new_password: &str) -> anyhow::Result<bool> {
+        self.set_setting_if_absent("system_password", new_password)
+            .await
+    }
+
+    /// Operator-selected serial device the backend reads ESP telemetry from.
+    /// `None` means unset (fall back to autodetect / env).
+    pub async fn get_read_serial_port(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting("read_serial_port").await
+    }
+
+    pub async fn set_read_serial_port(&self, path: &str) -> anyhow::Result<()> {
+        self.set_setting("read_serial_port", path).await
+    }
+
+    /// Operator-selected serial device used to flash ESP firmware.
+    pub async fn get_flash_serial_port(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting("flash_serial_port").await
+    }
+
+    pub async fn set_flash_serial_port(&self, path: &str) -> anyhow::Result<()> {
+        self.set_setting("flash_serial_port", path).await
     }
 
     pub async fn flush(&self) -> anyhow::Result<()> {
@@ -737,7 +796,7 @@ fn storage_worker(
             .context("failed to apply SQLite schema")?;
         apply_storage_migrations(&conn)?;
         initialize_default_calibration_profile(&conn, &bootstrap_profile)?;
-        initialize_default_system_password(&conn)?;
+        initialize_system_password_from_env(&conn)?;
         Ok(conn)
     });
 
@@ -852,6 +911,9 @@ fn storage_worker(
             Command::SetSetting { key, value, reply } => {
                 let _ = reply.send(db_set_setting(&conn, &key, &value));
             }
+            Command::SetSettingIfAbsent { key, value, reply } => {
+                let _ = reply.send(db_set_setting_if_absent(&conn, &key, &value));
+            }
             Command::Flush { reply } => {
                 let _ = reply.send(Ok(()));
             }
@@ -890,6 +952,17 @@ fn open_connection(db_path: &Path) -> anyhow::Result<Connection> {
 }
 
 fn apply_storage_migrations(conn: &Connection) -> anyhow::Result<()> {
+    ensure_column_exists(conn, "calibration_profiles", "engine_stroke", "INTEGER NULL")?;
+    ensure_column_exists(conn, "calibration_profiles", "engine_cylinders", "INTEGER NULL")?;
+    ensure_column_exists(conn, "runs", "engine_pulses_per_rev_hint", "REAL NULL")?;
+    ensure_column_exists(conn, "runs", "engine_rpm_scale", "REAL NULL")?;
+    ensure_column_exists(conn, "runs", "engine_stroke", "INTEGER NULL")?;
+    ensure_column_exists(conn, "runs", "engine_cylinders", "INTEGER NULL")?;
+    ensure_column_exists(conn, "runs", "peak_power_hp", "REAL NOT NULL DEFAULT 0.0")?;
+    ensure_column_exists(conn, "runs", "peak_power_rpm", "REAL NOT NULL DEFAULT 0.0")?;
+    ensure_column_exists(conn, "runs", "peak_torque_nm", "REAL NOT NULL DEFAULT 0.0")?;
+    ensure_column_exists(conn, "runs", "peak_torque_rpm", "REAL NOT NULL DEFAULT 0.0")?;
+    ensure_column_exists(conn, "runs", "peaks_computed", "INTEGER NOT NULL DEFAULT 0")?;
     ensure_column_exists(conn, "runs", "calibration_profile_id", "INTEGER NULL")?;
     ensure_column_exists(conn, "runs", "calibration_profile_name", "TEXT NULL")?;
     ensure_column_exists(conn, "runs", "vehicle_name", "TEXT NULL")?;
@@ -992,15 +1065,17 @@ fn initialize_default_calibration_profile(
     Ok(())
 }
 
-fn initialize_default_system_password(conn: &Connection) -> anyhow::Result<()> {
+/// Seeds the system password from `DYNO_SYSTEM_PASSWORD` for unattended
+/// installs. If unset, no password is stored — the system stays in
+/// first-boot state until an operator sets one via the setup endpoint.
+fn initialize_system_password_from_env(conn: &Connection) -> anyhow::Result<()> {
     if db_get_setting(conn, "system_password")?.is_none() {
-        // DYNO_SYSTEM_PASSWORD lets installers avoid shipping the built-in
-        // default; it is only consulted when no password is stored yet.
-        let initial = std::env::var("DYNO_SYSTEM_PASSWORD")
+        if let Some(initial) = std::env::var("DYNO_SYSTEM_PASSWORD")
             .ok()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "MFJ123456".to_owned());
-        db_set_setting(conn, "system_password", &initial)?;
+        {
+            db_set_setting(conn, "system_password", &initial)?;
+        }
     }
     Ok(())
 }
@@ -1022,8 +1097,10 @@ fn insert_calibration_profile(
             sample_window_ms,
             engine_pulses_per_rev_hint,
             engine_rpm_scale,
+            engine_stroke,
+            engine_cylinders,
             notes
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         "#,
         params![
             &profile.name,
@@ -1036,6 +1113,8 @@ fn insert_calibration_profile(
             i64::try_from(profile.sample_window_ms).context("sample_window_ms exceeds i64")?,
             profile.engine_pulses_per_rev_hint,
             profile.engine_rpm_scale,
+            profile.engine_stroke,
+            profile.engine_cylinders,
             profile.notes.as_deref(),
         ],
     )
@@ -1154,8 +1233,10 @@ fn update_calibration_profile(
             sample_window_ms = ?7,
             engine_pulses_per_rev_hint = ?8,
             engine_rpm_scale = ?9,
-            notes = ?10
-        WHERE profile_id = ?11
+            engine_stroke = ?10,
+            engine_cylinders = ?11,
+            notes = ?12
+        WHERE profile_id = ?13
         "#,
         params![
             &normalized.name,
@@ -1167,6 +1248,8 @@ fn update_calibration_profile(
             i64::try_from(normalized.sample_window_ms).context("sample_window_ms exceeds i64")?,
             normalized.engine_pulses_per_rev_hint,
             normalized.engine_rpm_scale,
+            normalized.engine_stroke,
+            normalized.engine_cylinders,
             normalized.notes.as_deref(),
             profile_id,
         ],
@@ -1256,6 +1339,8 @@ fn duplicate_calibration_profile(
         sample_window_ms: source_profile.sample_window_ms,
         engine_pulses_per_rev_hint: source_profile.engine_pulses_per_rev_hint,
         engine_rpm_scale: source_profile.engine_rpm_scale,
+        engine_stroke: source_profile.engine_stroke,
+        engine_cylinders: source_profile.engine_cylinders,
         notes: source_profile.notes.clone(),
     };
 
@@ -1492,13 +1577,17 @@ fn create_run(
                 encoder_pulses_per_rev,
                 roller_inertia_kg_m2,
                 sample_window_ms,
+                engine_pulses_per_rev_hint,
+                engine_rpm_scale,
+                engine_stroke,
+                engine_cylinders,
                 vehicle_name,
                 license_plate,
                 run_no,
                 customer_name,
                 customer_phone,
                 notes
-            ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             "#,
             params![
                 started_at_ms,
@@ -1510,6 +1599,10 @@ fn create_run(
                 calibration.encoder_pulses_per_rev,
                 calibration.roller_inertia_kg_m2,
                 i64::try_from(calibration.sample_window_ms).context("sample_window_ms exceeds i64")?,
+                calibration.engine_pulses_per_rev_hint,
+                calibration.engine_rpm_scale,
+                calibration.engine_stroke,
+                calibration.engine_cylinders,
                 normalize_optional_text(metadata.vehicle_name.as_deref()),
                 license_plate,
                 run_no,
@@ -1586,11 +1679,120 @@ fn append_frame(conn: &Connection, run_id: i64, frame: &LiveFrame) -> anyhow::Re
 }
 
 fn close_run(conn: &Connection, run_id: i64, ended_at_ms: i64) -> anyhow::Result<()> {
+    let rows_affected = conn
+        .execute(
+            "UPDATE runs SET ended_at_ms = ?1 WHERE run_id = ?2 AND ended_at_ms IS NULL",
+            params![ended_at_ms, run_id],
+        )
+        .with_context(|| format!("failed to close run {run_id}"))?;
+    // Only the call that actually transitions the run to closed computes
+    // peaks; a redundant close (rows_affected == 0) leaves the existing
+    // value alone, and reads fall back to lazy backfill if it's missing.
+    if rows_affected > 0 {
+        compute_and_store_peaks(conn, run_id)
+            .with_context(|| format!("failed to compute peaks for run {run_id}"))?;
+    }
+    Ok(())
+}
+
+/// Peak power/torque for a run, computed with the same "clean ascending
+/// sweep" rule the live dashboard uses (see `compute_run_peaks`). `0.0`
+/// means no frame qualified — mirrors the existing StoredRun/RunSummary
+/// convention where callers treat `peak_power_hp > 0.0` as "has a peak".
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct RunPeaks {
+    power_hp: f32,
+    power_rpm: f32,
+    torque_nm: f32,
+    torque_rpm: f32,
+}
+
+/// Port of the dashboard's live peak-tracking rule
+/// (`TelemetryPresenter.appendChartPoint`) applied to a run's full,
+/// already-finalized frame history. A frame contributes only if: it was
+/// recorded while the run state was `RECORDING` (matches the dashboard,
+/// which resets peaks on entering RECORDING and never accumulates outside
+/// it); engine RPM, power, and torque are all present; power and torque are
+/// non-negative; and engine RPM is monotonically non-decreasing versus the
+/// last *accepted* frame (drops the decel/coast-down tail so only the
+/// ascending pull counts).
+fn compute_run_peaks(frames: &[StoredFrame]) -> RunPeaks {
+    let mut peaks = RunPeaks::default();
+    let mut last_accepted_rpm: Option<f32> = None;
+
+    for frame in frames {
+        if frame.run_state != RunState::Recording {
+            continue;
+        }
+        let (Some(rpm), Some(power), Some(torque)) =
+            (frame.engine_rpm, frame.power_hp, frame.torque_nm)
+        else {
+            continue;
+        };
+        if power < 0.0 || torque < 0.0 {
+            continue;
+        }
+        if let Some(prev) = last_accepted_rpm {
+            if rpm < prev {
+                continue;
+            }
+        }
+        last_accepted_rpm = Some(rpm);
+
+        if power > peaks.power_hp {
+            peaks.power_hp = power;
+            peaks.power_rpm = rpm;
+        }
+        if torque > peaks.torque_nm {
+            peaks.torque_nm = torque;
+            peaks.torque_rpm = rpm;
+        }
+    }
+
+    peaks
+}
+
+/// Compute peaks over a run's stored frames and persist them on the `runs`
+/// row, marking it as computed so later reads don't recompute.
+fn compute_and_store_peaks(conn: &Connection, run_id: i64) -> anyhow::Result<RunPeaks> {
+    let frames = query_frames(conn, run_id)?;
+    let peaks = compute_run_peaks(&frames);
     conn.execute(
-        "UPDATE runs SET ended_at_ms = ?1 WHERE run_id = ?2 AND ended_at_ms IS NULL",
-        params![ended_at_ms, run_id],
+        r#"
+        UPDATE runs SET
+            peak_power_hp = ?1,
+            peak_power_rpm = ?2,
+            peak_torque_nm = ?3,
+            peak_torque_rpm = ?4,
+            peaks_computed = 1
+        WHERE run_id = ?5
+        "#,
+        params![
+            peaks.power_hp,
+            peaks.power_rpm,
+            peaks.torque_nm,
+            peaks.torque_rpm,
+            run_id,
+        ],
     )
-    .with_context(|| format!("failed to close run {run_id}"))?;
+    .with_context(|| format!("failed to persist peaks for run {run_id}"))?;
+    Ok(peaks)
+}
+
+/// Ensure a finalized run has computed peaks, backfilling lazily on first
+/// access. Runs that are still active (`ended_at_ms IS NULL`) are left
+/// alone — their peaks are computed once when the run closes.
+fn backfill_run_peaks(conn: &Connection, runs: &mut [StoredRun], peaks_computed: &[bool]) -> anyhow::Result<()> {
+    for (run, &computed) in runs.iter_mut().zip(peaks_computed.iter()) {
+        if computed || run.ended_at_ms.is_none() {
+            continue;
+        }
+        let peaks = compute_and_store_peaks(conn, run.run_id)?;
+        run.peak_power_hp = peaks.power_hp;
+        run.peak_power_rpm = peaks.power_rpm;
+        run.peak_torque_nm = peaks.torque_nm;
+        run.peak_torque_rpm = peaks.torque_rpm;
+    }
     Ok(())
 }
 
@@ -1614,40 +1816,21 @@ fn query_recent_runs(
                 r.encoder_pulses_per_rev,
                 r.roller_inertia_kg_m2,
                 r.sample_window_ms,
-                COALESCE((
-                    SELECT f.power_hp
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.power_hp IS NOT NULL
-                    ORDER BY f.power_hp DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_power_hp,
-                COALESCE((
-                    SELECT f.engine_rpm
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.power_hp IS NOT NULL
-                    ORDER BY f.power_hp DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_power_rpm,
-                COALESCE((
-                    SELECT f.torque_nm
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.torque_nm IS NOT NULL
-                    ORDER BY f.torque_nm DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_torque_nm,
-                COALESCE((
-                    SELECT f.engine_rpm
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.torque_nm IS NOT NULL
-                    ORDER BY f.torque_nm DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_torque_rpm,
+                r.engine_pulses_per_rev_hint,
+                r.engine_rpm_scale,
+                r.engine_stroke,
+                r.engine_cylinders,
+                r.peak_power_hp,
+                r.peak_power_rpm,
+                r.peak_torque_nm,
+                r.peak_torque_rpm,
                 r.vehicle_name,
                 r.license_plate,
                 r.run_no,
                 r.customer_name,
                 r.customer_phone,
-                r.notes
+                r.notes,
+                r.peaks_computed
             FROM runs r
             WHERE ?1 IS NULL
                OR instr(upper(COALESCE(r.license_plate, '')), upper(?1)) > 0
@@ -1661,13 +1844,17 @@ fn query_recent_runs(
 
     let search = search.map(str::trim).filter(|s| !s.is_empty());
     let rows = stmt
-        .query_map(params![search, limit as i64], map_stored_run_row)
+        .query_map(params![search, limit as i64], map_stored_run_row_with_peaks_flag)
         .context("failed to execute recent-runs query")?;
 
     let mut runs = Vec::new();
+    let mut peaks_computed = Vec::new();
     for row in rows {
-        runs.push(row.context("failed to map recent-runs row")?);
+        let (run, computed) = row.context("failed to map recent-runs row")?;
+        runs.push(run);
+        peaks_computed.push(computed);
     }
+    backfill_run_peaks(conn, &mut runs, &peaks_computed)?;
     Ok(runs)
 }
 
@@ -1687,49 +1874,40 @@ fn query_run(conn: &Connection, run_id: i64) -> anyhow::Result<Option<StoredRun>
                 r.encoder_pulses_per_rev,
                 r.roller_inertia_kg_m2,
                 r.sample_window_ms,
-                COALESCE((
-                    SELECT f.power_hp
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.power_hp IS NOT NULL
-                    ORDER BY f.power_hp DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_power_hp,
-                COALESCE((
-                    SELECT f.engine_rpm
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.power_hp IS NOT NULL
-                    ORDER BY f.power_hp DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_power_rpm,
-                COALESCE((
-                    SELECT f.torque_nm
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.torque_nm IS NOT NULL
-                    ORDER BY f.torque_nm DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_torque_nm,
-                COALESCE((
-                    SELECT f.engine_rpm
-                    FROM frames f
-                    WHERE f.run_id = r.run_id AND f.torque_nm IS NOT NULL
-                    ORDER BY f.torque_nm DESC, f.ts_ms ASC
-                    LIMIT 1
-                ), 0.0) AS peak_torque_rpm,
+                r.engine_pulses_per_rev_hint,
+                r.engine_rpm_scale,
+                r.engine_stroke,
+                r.engine_cylinders,
+                r.peak_power_hp,
+                r.peak_power_rpm,
+                r.peak_torque_nm,
+                r.peak_torque_rpm,
                 r.vehicle_name,
                 r.license_plate,
                 r.run_no,
                 r.customer_name,
                 r.customer_phone,
-                r.notes
+                r.notes,
+                r.peaks_computed
             FROM runs r
             WHERE r.run_id = ?1
             "#,
         )
         .with_context(|| format!("failed to prepare run query for run {run_id}"))?;
 
-    stmt.query_row([run_id], map_stored_run_row)
+    let mapped = stmt
+        .query_row([run_id], map_stored_run_row_with_peaks_flag)
         .optional()
-        .with_context(|| format!("failed to execute run query for run {run_id}"))
+        .with_context(|| format!("failed to execute run query for run {run_id}"))?;
+
+    match mapped {
+        Some((mut run, computed)) => {
+            let peaks_computed = [computed];
+            backfill_run_peaks(conn, std::slice::from_mut(&mut run), &peaks_computed)?;
+            Ok(Some(run))
+        }
+        None => Ok(None),
+    }
 }
 
 fn map_stored_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRun> {
@@ -1748,17 +1926,30 @@ fn map_stored_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRun> {
         encoder_pulses_per_rev: row.get(8)?,
         roller_inertia_kg_m2: row.get(9)?,
         sample_window_ms: row.get(10)?,
-        peak_power_hp: row.get(11)?,
-        peak_power_rpm: row.get(12)?,
-        peak_torque_nm: row.get(13)?,
-        peak_torque_rpm: row.get(14)?,
-        vehicle_name: row.get(15)?,
-        license_plate: row.get(16)?,
-        run_no: row.get(17)?,
-        customer_name: row.get(18)?,
-        customer_phone: row.get(19)?,
-        notes: row.get(20)?,
+        engine_pulses_per_rev_hint: row.get(11)?,
+        engine_rpm_scale: row.get(12)?,
+        engine_stroke: row.get(13)?,
+        engine_cylinders: row.get(14)?,
+        peak_power_hp: row.get(15)?,
+        peak_power_rpm: row.get(16)?,
+        peak_torque_nm: row.get(17)?,
+        peak_torque_rpm: row.get(18)?,
+        vehicle_name: row.get(19)?,
+        license_plate: row.get(20)?,
+        run_no: row.get(21)?,
+        customer_name: row.get(22)?,
+        customer_phone: row.get(23)?,
+        notes: row.get(24)?,
     })
+}
+
+/// Same column layout as `map_stored_run_row` plus a trailing
+/// `peaks_computed` flag column, used by callers that need to trigger lazy
+/// peak backfill.
+fn map_stored_run_row_with_peaks_flag(row: &rusqlite::Row<'_>) -> rusqlite::Result<(StoredRun, bool)> {
+    let run = map_stored_run_row(row)?;
+    let peaks_computed: i64 = row.get(25)?;
+    Ok((run, peaks_computed != 0))
 }
 
 fn query_frames(conn: &Connection, run_id: i64) -> anyhow::Result<Vec<StoredFrame>> {
@@ -1840,6 +2031,8 @@ fn fetch_active_calibration_profile(conn: &Connection) -> anyhow::Result<Option<
                 sample_window_ms,
                 engine_pulses_per_rev_hint,
                 engine_rpm_scale,
+                engine_stroke,
+                engine_cylinders,
                 notes
             FROM calibration_profiles
             WHERE is_active = 1
@@ -1873,6 +2066,8 @@ fn fetch_calibration_profile(
                 sample_window_ms,
                 engine_pulses_per_rev_hint,
                 engine_rpm_scale,
+                engine_stroke,
+                engine_cylinders,
                 notes
             FROM calibration_profiles
             WHERE profile_id = ?1
@@ -1902,6 +2097,8 @@ fn list_calibration_profiles(conn: &Connection) -> anyhow::Result<Vec<Calibratio
                 sample_window_ms,
                 engine_pulses_per_rev_hint,
                 engine_rpm_scale,
+                engine_stroke,
+                engine_cylinders,
                 notes
             FROM calibration_profiles
             ORDER BY is_active DESC, updated_at_ms DESC, profile_id DESC
@@ -2027,7 +2224,9 @@ fn map_calibration_profile_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cali
             .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(8, sample_window_ms))?,
         engine_pulses_per_rev_hint: row.get(9)?,
         engine_rpm_scale: row.get(10)?,
-        notes: row.get(11)?,
+        engine_stroke: row.get(11)?,
+        engine_cylinders: row.get(12)?,
+        notes: row.get(13)?,
     })
 }
 
@@ -2191,17 +2390,37 @@ fn db_get_peak_values_for_runs(
         return Ok(Vec::new());
     }
 
+    // Ensure every requested run has its peaks computed with the unified
+    // (dashboard) rule before reading them, same lazy-backfill contract as
+    // query_run/query_recent_runs.
+    for &run_id in run_ids {
+        let already_computed: Option<i64> = conn
+            .query_row(
+                "SELECT peaks_computed FROM runs WHERE run_id = ?1 AND ended_at_ms IS NOT NULL",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("failed to check peaks_computed for run {run_id}"))?;
+        if already_computed == Some(0) {
+            compute_and_store_peaks(conn, run_id)
+                .with_context(|| format!("failed to backfill peaks for run {run_id}"))?;
+        }
+    }
+
     let placeholders = (1..=run_ids.len())
         .map(|i| format!("?{i}"))
         .collect::<Vec<_>>()
         .join(", ");
 
+    // Peak power/torque come from the runs table (unified dashboard rule);
+    // peak speed is not governed by that rule, so it's still a raw MAX over
+    // frames.
     let sql = format!(
-        "SELECT run_id, MAX(power_hp), MAX(torque_nm), MAX(speed_kmh)
-         FROM frames
-         WHERE run_id IN ({placeholders})
-         GROUP BY run_id
-         HAVING MAX(power_hp) IS NOT NULL AND MAX(torque_nm) IS NOT NULL"
+        "SELECT r.run_id, r.peak_power_hp, r.peak_torque_nm,
+                (SELECT MAX(f.speed_kmh) FROM frames f WHERE f.run_id = r.run_id)
+         FROM runs r
+         WHERE r.run_id IN ({placeholders}) AND r.peak_power_hp > 0.0 AND r.peak_torque_nm > 0.0"
     );
 
     let mut stmt = conn.prepare(&sql).context("failed to prepare peak-values query")?;
@@ -2240,6 +2459,23 @@ fn db_set_setting(conn: &Connection, key: &str, value: &str) -> anyhow::Result<(
     )
     .with_context(|| format!("failed to set setting '{key}'"))?;
     Ok(())
+}
+
+/// Atomically set `key` only if it has no row yet. Returns `true` if this
+/// call inserted the value, `false` if a row already existed (left
+/// untouched). Avoids the check-then-set race of a separate
+/// `db_get_setting` + `db_set_setting` pair — the whole thing is one
+/// statement, and the storage worker processes commands strictly
+/// sequentially, so no other command can interleave between the check and
+/// the insert.
+fn db_set_setting_if_absent(conn: &Connection, key: &str, value: &str) -> anyhow::Result<bool> {
+    let rows = conn
+        .execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+            [key, value],
+        )
+        .with_context(|| format!("failed to set setting '{key}' if absent"))?;
+    Ok(rows > 0)
 }
 
 fn stored_run_to_summary(run: StoredRun) -> RunSummary {
@@ -2302,6 +2538,7 @@ mod tests {
             modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
             db_path: db_path.display().to_string(),
             esp32_config_path: "esp32-device-config.json".to_owned(),
             esp32_applied_config_path: "esp32-last-applied.json".to_owned(),
@@ -2345,6 +2582,111 @@ mod tests {
             faults: Vec::new(),
             alerts: Default::default(),
         }
+    }
+
+    fn stored_frame(
+        ts_ms: i64,
+        run_state: RunState,
+        engine_rpm: Option<f32>,
+        power_hp: Option<f32>,
+        torque_nm: Option<f32>,
+    ) -> StoredFrame {
+        StoredFrame {
+            run_id: 1,
+            ts_ms,
+            engine_rpm,
+            roller_rpm: None,
+            speed_kmh: None,
+            power_hp,
+            torque_nm,
+            afr: None,
+            lambda: None,
+            ambient_temp_c: None,
+            humidity_pct: None,
+            pressure_hpa: None,
+            correction_factor: 1.0,
+            run_state,
+        }
+    }
+
+    #[test]
+    fn compute_run_peaks_takes_max_over_clean_ascending_sweep() {
+        let frames = vec![
+            stored_frame(0, RunState::Idle, Some(900.0), None, None),
+            stored_frame(100, RunState::Recording, Some(2000.0), Some(40.0), Some(100.0)),
+            stored_frame(200, RunState::Recording, Some(3000.0), Some(60.0), Some(110.0)),
+            stored_frame(300, RunState::Recording, Some(4000.0), Some(80.0), Some(105.0)),
+        ];
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks.power_hp, 80.0);
+        assert_eq!(peaks.power_rpm, 4000.0);
+        assert_eq!(peaks.torque_nm, 110.0);
+        assert_eq!(peaks.torque_rpm, 3000.0);
+    }
+
+    #[test]
+    fn compute_run_peaks_rejects_decel_spike_after_rpm_drop() {
+        let frames = vec![
+            stored_frame(100, RunState::Recording, Some(2000.0), Some(40.0), Some(100.0)),
+            stored_frame(200, RunState::Recording, Some(4000.0), Some(80.0), Some(110.0)),
+            // Decel tail: rpm drops, even though power/torque here would be
+            // a new peak they must NOT count.
+            stored_frame(300, RunState::Recording, Some(3500.0), Some(95.0), Some(130.0)),
+        ];
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks.power_hp, 80.0);
+        assert_eq!(peaks.torque_nm, 110.0);
+    }
+
+    #[test]
+    fn compute_run_peaks_skips_frame_missing_torque() {
+        let frames = vec![
+            // Highest power, but torque missing -> must not set either peak.
+            stored_frame(100, RunState::Recording, Some(2000.0), Some(999.0), None),
+            stored_frame(200, RunState::Recording, Some(3000.0), Some(60.0), Some(110.0)),
+        ];
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks.power_hp, 60.0);
+        assert_eq!(peaks.torque_nm, 110.0);
+    }
+
+    #[test]
+    fn compute_run_peaks_drops_negative_values() {
+        let frames = vec![
+            stored_frame(100, RunState::Recording, Some(2000.0), Some(-5.0), Some(-1.0)),
+            stored_frame(200, RunState::Recording, Some(3000.0), Some(60.0), Some(110.0)),
+        ];
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks.power_hp, 60.0);
+        assert_eq!(peaks.torque_nm, 110.0);
+    }
+
+    #[test]
+    fn compute_run_peaks_ignores_pre_run_idle_frames() {
+        let frames = vec![
+            // Pre-run buffer frames prepended with idle/armed state, higher
+            // "power" than anything in the actual recording, must be ignored.
+            stored_frame(0, RunState::Idle, Some(900.0), Some(500.0), Some(500.0)),
+            stored_frame(50, RunState::Armed, Some(1500.0), Some(500.0), Some(500.0)),
+            stored_frame(100, RunState::Recording, Some(2000.0), Some(40.0), Some(100.0)),
+        ];
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks.power_hp, 40.0);
+        assert_eq!(peaks.torque_nm, 100.0);
+    }
+
+    #[test]
+    fn compute_run_peaks_empty_run_yields_zero() {
+        let frames: Vec<StoredFrame> = Vec::new();
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks, RunPeaks::default());
+    }
+
+    #[test]
+    fn compute_run_peaks_all_frames_missing_rpm_yields_zero() {
+        let frames = vec![stored_frame(100, RunState::Recording, None, Some(40.0), Some(100.0))];
+        let peaks = compute_run_peaks(&frames);
+        assert_eq!(peaks, RunPeaks::default());
     }
 
     async fn record_run(storage: &Storage, base_ts: i64) {
@@ -2661,6 +3003,8 @@ mod tests {
                     sample_window_ms: 90,
                     engine_pulses_per_rev_hint: Some(1.0),
                     engine_rpm_scale: Some(1.0),
+                    engine_stroke: None,
+                    engine_cylinders: None,
                     notes: Some("created".to_owned()),
                 },
                 false,
@@ -2705,6 +3049,8 @@ mod tests {
                     sample_window_ms: 120,
                     engine_pulses_per_rev_hint: Some(1.0),
                     engine_rpm_scale: Some(1.0),
+                    engine_stroke: None,
+                    engine_cylinders: None,
                     notes: Some("updated".to_owned()),
                 },
                 false,

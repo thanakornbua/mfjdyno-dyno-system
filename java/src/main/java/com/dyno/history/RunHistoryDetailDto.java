@@ -34,6 +34,18 @@ public final class RunHistoryDetailDto {
     @JsonProperty("sample_window_ms")
     private Integer sampleWindowMs;
 
+    @JsonProperty("engine_pulses_per_rev_hint")
+    private Double enginePulsesPerRevHint;
+
+    @JsonProperty("engine_rpm_scale")
+    private Double engineRpmScale;
+
+    @JsonProperty("engine_stroke")
+    private Integer engineStroke;
+
+    @JsonProperty("engine_cylinders")
+    private Integer engineCylinders;
+
     @JsonProperty("peak_power_hp")
     private Double peakPowerHp;
 
@@ -105,6 +117,22 @@ public final class RunHistoryDetailDto {
 
     public Integer getSampleWindowMs() {
         return sampleWindowMs;
+    }
+
+    public Double getEnginePulsesPerRevHint() {
+        return enginePulsesPerRevHint;
+    }
+
+    public Double getEngineRpmScale() {
+        return engineRpmScale;
+    }
+
+    public Integer getEngineStroke() {
+        return engineStroke;
+    }
+
+    public Integer getEngineCylinders() {
+        return engineCylinders;
     }
 
     public Double getPeakPowerHp() {

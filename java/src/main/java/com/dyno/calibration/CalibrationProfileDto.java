@@ -37,6 +37,12 @@ public final class CalibrationProfileDto {
     @JsonProperty("engine_rpm_scale")
     private Double engineRpmScale;
 
+    @JsonProperty("engine_stroke")
+    private Integer engineStroke;
+
+    @JsonProperty("engine_cylinders")
+    private Integer engineCylinders;
+
     private String notes;
 
     public Long getProfileId() {
@@ -81,6 +87,14 @@ public final class CalibrationProfileDto {
 
     public Double getEngineRpmScale() {
         return engineRpmScale;
+    }
+
+    public Integer getEngineStroke() {
+        return engineStroke;
+    }
+
+    public Integer getEngineCylinders() {
+        return engineCylinders;
     }
 
     public String getNotes() {

@@ -11,6 +11,7 @@ import com.dyno.control.RunControlApiClient;
 import com.dyno.control.RunControlResponse;
 import com.dyno.export.DynoPdfExporter;
 import com.dyno.health.HealthApiClient;
+import com.dyno.health.HealthPollDebouncer;
 import com.dyno.health.OperatorStatusMapper;
 import com.dyno.health.OperatorStatusModel;
 import com.dyno.history.CompareRunsResponseDto;
@@ -56,6 +57,7 @@ public final class OperatorConsoleStage {
     private final HistoryApiClient historyApiClient = HistoryApiClient.fromEnvironment();
     private final CalibrationApiClient calibrationApiClient = CalibrationApiClient.fromEnvironment();
     private final HealthApiClient healthApiClient = HealthApiClient.fromEnvironment();
+    private final HealthPollDebouncer healthPollDebouncer = new HealthPollDebouncer(3);
     private final RunControlUiState runControlState = new RunControlUiState();
     private final ExecutorService controlExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "dyno-ui-run-control");
@@ -205,6 +207,26 @@ public final class OperatorConsoleStage {
         stage.show();
         webSocketClient.start();
         startHealthPolling();
+        checkFirstBootPasswordSetup();
+    }
+
+    /**
+     * On first boot the backend has no system password configured yet. Prompt
+     * the operator to create one before they can reach Machine Configuration.
+     * If the backend is unreachable at this point, skip silently — the
+     * password gate itself falls back to the same setup flow when opened.
+     */
+    private void checkFirstBootPasswordSetup() {
+        CompletableFuture.runAsync(() -> {
+            try {
+                if (!calibrationApiClient.getSetupStatus().isPasswordSet()) {
+                    Platform.runLater(() -> FirstBootSetupDialog.show(stage));
+                }
+            } catch (Exception ignored) {
+                // Backend unreachable or not yet ready; the password gate
+                // will redirect to setup when Machine Configuration is opened.
+            }
+        }, controlExecutor);
     }
 
     private final com.dyno.presenter.RunPageDirector runPageDirector =
@@ -346,7 +368,7 @@ public final class OperatorConsoleStage {
                     renderRoot();
                 });
             }
-        }, 0, 5, TimeUnit.SECONDS);
+        }, 0, 15, TimeUnit.SECONDS);
     }
 
     private void handleCompareRequested() {
@@ -569,12 +591,13 @@ public final class OperatorConsoleStage {
 
     private OperatorStatusModel fetchOperatorStatus() {
         try {
-            return OperatorStatusMapper.fromHealth(healthApiClient.getStartupHealth());
+            return healthPollDebouncer.onSuccess(
+                OperatorStatusMapper.fromHealth(healthApiClient.getStartupHealth()));
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            return OperatorStatusMapper.unavailable();
+            return healthPollDebouncer.onFailure();
         } catch (Exception error) {
-            return OperatorStatusMapper.unavailable();
+            return healthPollDebouncer.onFailure();
         }
     }
 

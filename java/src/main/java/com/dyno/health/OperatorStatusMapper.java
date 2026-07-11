@@ -50,13 +50,11 @@ public final class OperatorStatusMapper {
         StartupCheckDto storageCheck = findCheck(checks, "database_path");
         StartupCheckDto serialCheck = findCheck(checks, "serial_port");
         StartupCheckDto ambientCheck = findCheck(checks, "bme280_i2c");
-        StartupCheckDto stmCheck = findCheck(checks, "stm_device");
         StartupCheckDto uartBridgeCheck = findCheck(checks, "uart_bridge");
 
         boolean storageReady = isOk(storageCheck);
         boolean serialDegraded = isNonOk(serialCheck);
         boolean ambientDegraded = isNonOk(ambientCheck);
-        boolean stmDegraded = isNonOk(stmCheck);
         boolean uartBridgeDegraded = isNonOk(uartBridgeCheck);
         String sourceMode = normalize(health.getSourceMode(), "unknown");
         boolean replayMode = "replay".equals(sourceMode);
@@ -72,35 +70,13 @@ public final class OperatorStatusMapper {
         if (ambientDegraded) {
             warnings.add("Ambient sensor unavailable — fallback values in use");
         }
-        if (stmDegraded) {
-            warnings.add("STM check unavailable");
-        }
         if (uartBridgeDegraded) {
             warnings.add("UART bridge unavailable — retrying");
         }
 
-        OperatorStatusModel.OverallState overallState = "ok".equals(normalize(health.getStatus(), "unknown"))
-            ? OperatorStatusModel.OverallState.READY
-            : OperatorStatusModel.OverallState.DEGRADED;
+        OperatorStatusModel.OverallState overallState = OperatorStatusModel.OverallState.READY;
 
-        String primaryMessage;
-        if (!storageReady) {
-            primaryMessage = "Storage unavailable";
-        } else if (serialDegraded) {
-            primaryMessage = "Serial input unavailable — retrying";
-        } else if (ambientDegraded) {
-            primaryMessage = "Ambient sensor unavailable — fallback values in use";
-        } else if (stmDegraded) {
-            primaryMessage = "STM check unavailable";
-        } else if (uartBridgeDegraded) {
-            primaryMessage = "UART bridge unavailable — retrying";
-        } else if (replayMode) {
-            primaryMessage = "Replay mode active";
-        } else if (overallState == OperatorStatusModel.OverallState.READY) {
-            primaryMessage = "Backend ready";
-        } else {
-            primaryMessage = "Backend degraded";
-        }
+        String primaryMessage = replayMode ? "Replay mode active" : "Backend ready";
 
         List<String> secondaryParts = new ArrayList<String>();
         if (replayMode && !"Replay mode active".equals(primaryMessage)) {
@@ -136,6 +112,21 @@ public final class OperatorStatusMapper {
             join(secondaryParts, " | "),
             warningSummary,
             warnings
+        );
+    }
+
+    public static OperatorStatusModel withSecondaryMessage(OperatorStatusModel base, String secondaryMessage) {
+        return new OperatorStatusModel(
+            base.getOverallState(),
+            base.isBackendReachable(),
+            base.getSourceMode(),
+            base.isStorageReady(),
+            base.isSerialDegraded(),
+            base.isAmbientDegraded(),
+            base.getPrimaryMessage(),
+            secondaryMessage,
+            base.getWarningSummary(),
+            base.getWarnings()
         );
     }
 

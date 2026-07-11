@@ -1,5 +1,6 @@
 //! Top-level application object; owns all subsystem handles.
 
+use anyhow::Context;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -19,6 +20,7 @@ use crate::{
     replay::ReplayTask,
     run_control::RunControl,
     serial::SerialTask,
+    serial_gate::serial_gate,
     state::StateMachine,
     storage::{Storage, StorageTask},
     ws::WsTask,
@@ -56,7 +58,37 @@ pub struct App {
 
 impl App {
     /// Construct and start all subsystems.
-    pub async fn start(config: Config) -> anyhow::Result<Self> {
+    pub async fn start(mut config: Config) -> anyhow::Result<Self> {
+        // ── Storage ───────────────────────────────────────────────────────────
+        //
+        // Opened before the startup health snapshot so the persisted read
+        // serial port override below is already applied when health checks the
+        // serial device — otherwise /healthz would permanently report the
+        // pre-override port.
+        info!("opening storage at {}", config.db_path);
+        let storage = Storage::open(&config)
+            .await
+            .with_context(|| format!("could not open storage at {}", config.db_path))?;
+
+        // ── Persisted read serial port override ────────────────────────────────
+        //
+        // Precedence for the ESP read port: an explicit `DYNO_SERIAL_PORT` env
+        // (anything other than `auto`) wins, then the operator-selected port
+        // persisted during first-boot setup, then boot-time autodetection.
+        if !serial_port_pinned_by_env() {
+            if let Some(persisted) = storage.get_read_serial_port().await? {
+                let persisted = persisted.trim().to_owned();
+                if !persisted.is_empty() && persisted != config.serial_port {
+                    info!(
+                        "using operator-selected read serial port {persisted} \
+                         (overriding autodetected {})",
+                        config.serial_port
+                    );
+                    config.serial_port = persisted;
+                }
+            }
+        }
+
         let startup_health = collect_startup_health(&config);
         log_startup_health(&startup_health);
         if startup_health.has_errors() {
@@ -72,9 +104,6 @@ impl App {
             ));
         }
 
-        // ── Storage ───────────────────────────────────────────────────────────
-        info!("opening storage at {}", config.db_path);
-        let storage = Storage::open(&config).await?;
         let calibration = storage
             .fetch_active_calibration()
             .await?
@@ -102,8 +131,15 @@ impl App {
         let audit_logger = AuditLogger::new(storage.clone());
 
         let (live_tx, live_rx) = watch::channel::<LiveFrame>(FusionTask::idle_frame());
-        let ws = WsTask::spawn(&config.ws_bind, live_rx.clone());
+        let ws = WsTask::spawn(&config.ws_bind, live_rx.clone()).await?;
         let storage_task = StorageTask::spawn(storage.clone(), live_rx.clone());
+
+        // Suspend/resume gate between the live serial reader and anything
+        // needing exclusive port access (ESP32 flashing). Seed `actual=false`
+        // and let the reader publish true only once it has successfully opened
+        // the port.
+        let (serial_gate_handle, serial_gate_worker) = serial_gate(false);
+
         let api = ApiTask::spawn(
             &config.api_bind,
             storage.clone(),
@@ -112,7 +148,10 @@ impl App {
             run_control.clone(),
             calibration_lock,
             audit_logger,
-        );
+            config.clone(),
+            serial_gate_handle,
+        )
+        .await?;
         let state = StateMachine::new();
 
         let (serial, can, replay, bme280, fusion) = match config.source_mode {
@@ -156,7 +195,13 @@ impl App {
                 let (ambient_tx, ambient_rx) =
                     watch::channel::<AmbientSample>(AmbientSample::stub());
                 let (can_tx, can_rx) = watch::channel::<CanSample>(CanSample::missing());
-                let serial = SerialTask::spawn(&config, frame_tx, ambient_tx);
+                let serial = SerialTask::spawn(
+                    &config,
+                    frame_tx,
+                    ambient_tx,
+                    serial_gate_worker,
+                    calibration_rx.clone(),
+                );
                 let can = CanTask::spawn(config.can_iface.clone(), can_tx);
                 let fusion = FusionTask::spawn(
                     frame_rx,
@@ -203,6 +248,18 @@ impl App {
     }
 }
 
+/// True when `DYNO_SERIAL_PORT` is set to an explicit device (not `auto`),
+/// meaning the operator/deployment pinned it and a persisted selection must
+/// not override it.
+fn serial_port_pinned_by_env() -> bool {
+    std::env::var("DYNO_SERIAL_PORT")
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && !value.eq_ignore_ascii_case(crate::detect::AUTO)
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +279,7 @@ mod tests {
             modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
             db_path: db_path.to_owned(),
             esp32_config_path: "esp32-device-config.json".to_owned(),
             esp32_applied_config_path: "esp32-last-applied.json".to_owned(),
@@ -271,12 +329,57 @@ mod tests {
         std::fs::write(&blocker, "block").expect("create blocker file");
         let db_path = blocker.join("dyno.sqlite");
 
+        // Storage now opens before the health snapshot (so the persisted
+        // serial-port override is reflected in health), so an unusable db
+        // path fails at storage open with a legible message.
         let err = App::start(test_config(&db_path.display().to_string()))
             .await
             .err()
             .expect("startup should fail");
-        assert!(err.to_string().contains("startup checks failed"));
+        assert!(err.to_string().contains("could not open storage"), "got {err:#}");
 
         let _ = std::fs::remove_file(blocker);
+    }
+
+    #[tokio::test]
+    async fn startup_health_reflects_persisted_read_serial_port_override() {
+        let _guard = crate::test_env_lock();
+        std::env::remove_var("DYNO_SERIAL_PORT");
+        let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let db_path = std::env::temp_dir().join(format!("dyno-app-override-{unique}.sqlite"));
+        let _ = std::fs::remove_file(&db_path);
+
+        // Persist an operator-selected read port before the app starts.
+        let mut config = test_config(&db_path.display().to_string());
+        let storage = Storage::open(&config).await.expect("open storage");
+        storage
+            .set_read_serial_port("/dev/dyno-override-test")
+            .await
+            .expect("persist read port");
+        storage.flush().await.expect("flush");
+        drop(storage);
+
+        // Live mode so the health snapshot includes the serial_port check.
+        // The missing device only degrades health; the ESP32 sync failure on
+        // open is retryable and startup continues.
+        config.source_mode = SourceMode::Live;
+        config.serial_port = "/dev/dyno-autodetected-test".to_owned();
+        let app = App::start(config).await.expect("start app");
+
+        assert_eq!(app.config.serial_port, "/dev/dyno-override-test");
+        let serial_check = app
+            .startup_health
+            .checks
+            .iter()
+            .find(|check| check.name == "serial_port")
+            .expect("serial_port check present in live mode");
+        assert!(
+            serial_check.summary.contains("/dev/dyno-override-test"),
+            "health must report the overridden port, got: {}",
+            serial_check.summary
+        );
+        drop(app);
+
+        let _ = std::fs::remove_file(db_path);
     }
 }

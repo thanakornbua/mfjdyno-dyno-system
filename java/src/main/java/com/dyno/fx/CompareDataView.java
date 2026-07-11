@@ -93,13 +93,13 @@ public final class CompareDataView extends Dialog<Void> {
 
     private String metricValue(ComparedRunDto comparedRun, Metric metric) {
         RunHistoryDetailDto run = comparedRun.getRun();
-        RunHistoryFrameDto peakFrame = CompareDisplayMapper.peakPowerFrame(comparedRun);
+        RunHistoryFrameDto peakFrame = CompareDisplayMapper.frameAtPeakPower(comparedRun);
         RunHistoryFrameDto fastestFrame = RunMetrics.fastestFrame(comparedRun);
         switch (metric) {
             case PEAK_POWER:
-                return CompareDisplayMapper.safeValue(peakFrame == null ? null : peakFrame.getPowerHp(), "HP");
+                return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakPowerHp(), "HP");
             case PEAK_POWER_RPM:
-                return CompareDisplayMapper.safeValue(peakFrame == null ? null : peakFrame.getEngineRpm(), "RPM");
+                return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakPowerRpm(), "RPM");
             case PEAK_TORQUE:
                 return CompareDisplayMapper.safeValue(run == null ? null : run.getPeakTorqueNm(), "Nm");
             case PEAK_TORQUE_RPM:

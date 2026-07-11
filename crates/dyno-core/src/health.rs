@@ -16,7 +16,6 @@ use tracing::{error, info, warn};
 use crate::config::{Config, SourceMode};
 
 const BME280_I2C_PATH: &str = "/dev/i2c-1";
-const DEFAULT_STM_DEVICE_PATH: &str = "/dev/ttySTM0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,17 +51,8 @@ pub fn collect_startup_health(config: &Config) -> StartupHealth {
 
     if config.source_mode == SourceMode::Live {
         checks.push(check_serial_path(&config.serial_port));
-        let stm_path = env::var("DYNO_STM_DEVICE_PATH")
-            .unwrap_or_else(|_| DEFAULT_STM_DEVICE_PATH.to_owned());
         let uart_bridge_path = env::var("DYNO_UART_BRIDGE_PATH")
             .unwrap_or_else(|_| config.serial_port.clone());
-        checks.push(check_named_device(
-            "stm_device",
-            "STM device",
-            Path::new(&stm_path),
-            false,
-            "STM telemetry checks will stay unavailable until it appears",
-        ));
         checks.push(check_named_device(
             "uart_bridge",
             "UART bridge",
@@ -270,6 +260,7 @@ mod tests {
             modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
             db_path: db_path.to_owned(),
             esp32_config_path: "esp32-device-config.json".to_owned(),
             esp32_applied_config_path: "esp32-last-applied.json".to_owned(),

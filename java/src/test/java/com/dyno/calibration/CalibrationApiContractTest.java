@@ -104,6 +104,8 @@ public final class CalibrationApiContractTest {
             Long.valueOf(100L),
             Double.valueOf(1.0),
             Double.valueOf(1.0),
+            null,
+            null,
             "baseline",
             Boolean.TRUE
         ));
@@ -144,6 +146,116 @@ public final class CalibrationApiContractTest {
     }
 
     @Test
+    public void setupStatusShapeParsesPasswordSetTrue() throws Exception {
+        SetupStatusDto status = MAPPER.readValue("{\"password_set\":true}", SetupStatusDto.class);
+        assertTrue(status.isPasswordSet());
+    }
+
+    @Test
+    public void setupStatusShapeParsesPasswordSetFalse() throws Exception {
+        SetupStatusDto status = MAPPER.readValue("{\"password_set\":false}", SetupStatusDto.class);
+        assertFalse(status.isPasswordSet());
+    }
+
+    @Test
+    public void serialDevicesShapeParses() throws Exception {
+        String json =
+            "{"
+                + "\"devices\":["
+                + "{\"path\":\"/dev/ttyUSB0\",\"label\":\"usb-Silicon_Labs_CP2102N\",\"is_esp32_guess\":true},"
+                + "{\"path\":\"/dev/ttyUSB1\",\"label\":\"/dev/ttyUSB1\",\"is_esp32_guess\":false}"
+                + "],"
+                + "\"read_serial_port\":\"/dev/ttyUSB0\","
+                + "\"flash_serial_port\":\"/dev/ttyUSB1\""
+                + "}";
+
+        SerialDevicesDto devices = MAPPER.readValue(json, SerialDevicesDto.class);
+
+        assertEquals(2, devices.getDevices().size());
+        assertEquals("/dev/ttyUSB0", devices.getDevices().get(0).getPath());
+        assertTrue(devices.getDevices().get(0).isEsp32Guess());
+        assertFalse(devices.getDevices().get(1).isEsp32Guess());
+        assertEquals("/dev/ttyUSB0", devices.getReadSerialPort());
+        assertEquals("/dev/ttyUSB1", devices.getFlashSerialPort());
+    }
+
+    @Test
+    public void dependenciesShapeParses() throws Exception {
+        String json =
+            "{"
+                + "\"dependencies\":["
+                + "{"
+                + "\"name\":\"arduino_cli\","
+                + "\"category\":\"flash-toolchain\","
+                + "\"required\":false,"
+                + "\"status\":\"missing\","
+                + "\"detail\":\"'arduino-cli' was not found on PATH\","
+                + "\"remediation\":\"Install arduino-cli\","
+                + "\"blocks_flashing\":true"
+                + "},"
+                + "{"
+                + "\"name\":\"serial_device\","
+                + "\"category\":\"device\","
+                + "\"required\":true,"
+                + "\"status\":\"ok\","
+                + "\"detail\":\"1 serial device(s) detected\","
+                + "\"remediation\":\"\","
+                + "\"blocks_flashing\":false"
+                + "}"
+                + "]"
+                + "}";
+
+        DependencyStatusDto status = MAPPER.readValue(json, DependencyStatusDto.class);
+
+        assertEquals(2, status.getDependencies().size());
+        DependencyDto arduino = status.getDependencies().get(0);
+        assertEquals("arduino_cli", arduino.getName());
+        assertEquals("flash-toolchain", arduino.getCategory());
+        assertFalse(arduino.isRequired());
+        assertTrue(arduino.isMissing());
+        assertFalse(arduino.isOk());
+        assertTrue(arduino.blocksFlashing());
+
+        DependencyDto serial = status.getDependencies().get(1);
+        assertEquals("device", serial.getCategory());
+        assertTrue(serial.isRequired());
+        assertTrue(serial.isOk());
+        assertFalse(serial.blocksFlashing());
+    }
+
+    @Test
+    public void flashStatusShapeParsesTerminalStates() throws Exception {
+        FlashStatusDto running = MAPPER.readValue(
+            "{\"state\":\"running\",\"log\":\"compiling...\",\"port\":\"/dev/ttyUSB1\"}",
+            FlashStatusDto.class);
+        assertTrue(running.isRunning());
+        assertFalse(running.isTerminal());
+        assertEquals("compiling...", running.getLog());
+
+        FlashStatusDto success = MAPPER.readValue("{\"state\":\"success\",\"log\":\"done\"}", FlashStatusDto.class);
+        assertTrue(success.isSuccess());
+        assertTrue(success.isTerminal());
+
+        FlashStatusDto error = MAPPER.readValue("{\"state\":\"error\",\"log\":\"boom\"}", FlashStatusDto.class);
+        assertTrue(error.isError());
+        assertTrue(error.isTerminal());
+
+        FlashStatusDto idle = MAPPER.readValue("{\"state\":\"idle\",\"log\":\"\"}", FlashStatusDto.class);
+        assertFalse(idle.isTerminal());
+    }
+
+    @Test
+    public void lockExceptionRecognizesSetupRequiredStatus() {
+        CalibrationApiClient.LockException setupRequired =
+            new CalibrationApiClient.LockException(409, "setup_required");
+        assertTrue(setupRequired.isSetupRequired());
+
+        CalibrationApiClient.LockException wrongPassword =
+            new CalibrationApiClient.LockException(401, "wrong password");
+        assertFalse(wrongPassword.isSetupRequired());
+    }
+
+    @Test
     public void draftValidatorFlagsBlankName() {
         CalibrationValidationDto validation = CalibrationDraftValidator.validate(
             new CalibrationUpsertRequestDto(
@@ -152,6 +264,8 @@ public final class CalibrationApiContractTest {
                 Double.valueOf(60.0),
                 Double.valueOf(3.5),
                 Long.valueOf(100L),
+                null,
+                null,
                 null,
                 null,
                 null,

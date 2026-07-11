@@ -24,10 +24,12 @@ public final class PasswordGateDialog extends Dialog<Boolean> {
 
     private final PasswordField passwordField = new PasswordField();
     private final Label errorLabel = new Label();
+    private final Stage owner;
     private boolean passwordVerified = false;
     private Button confirmButton;
 
     private PasswordGateDialog(Stage owner) {
+        this.owner = owner;
         initOwner(owner);
         initModality(Modality.APPLICATION_MODAL);
         setTitle(UiText.text("Machine Configuration"));
@@ -61,6 +63,21 @@ public final class PasswordGateDialog extends Dialog<Boolean> {
                         close();
                     });
                 } catch (CalibrationApiClient.LockException e) {
+                    if (e.isSetupRequired()) {
+                        Platform.runLater(() -> {
+                            confirmButton.setDisable(false);
+                            passwordField.clear();
+                            boolean created = FirstBootSetupDialog.show(owner);
+                            if (created) {
+                                passwordVerified = true;
+                                setResult(Boolean.TRUE);
+                                close();
+                            } else {
+                                showError(UiText.text("System password setup is required before continuing"));
+                            }
+                        });
+                        return;
+                    }
                     Platform.runLater(() -> {
                         confirmButton.setDisable(false);
                         passwordField.clear();

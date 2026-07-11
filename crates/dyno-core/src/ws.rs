@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use anyhow::Context;
 use serde::Serialize;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -81,14 +82,25 @@ pub struct WsTask {
 }
 
 impl WsTask {
-    /// Spawn the WebSocket broadcast server.
-    pub fn spawn(bind_addr: &str, rx: watch::Receiver<LiveFrame>) -> Self {
-        let bind_addr = bind_addr.to_owned();
+    /// Bind the WebSocket broadcast server and spawn its accept loop.
+    ///
+    /// Binding happens before the task is spawned so a port conflict (e.g. a
+    /// second `dynod` instance already running) is reported as an error the
+    /// caller can act on, instead of the task silently logging and exiting.
+    pub async fn spawn(bind_addr: &str, rx: watch::Receiver<LiveFrame>) -> anyhow::Result<Self> {
+        let listener = TcpListener::bind(bind_addr).await.with_context(|| {
+            format!(
+                "websocket: failed to bind {bind_addr} — is another dynod instance \
+                 (e.g. the systemd service) already running?"
+            )
+        })?;
+        info!("websocket: listening on {bind_addr}");
+
         let handle = tokio::spawn(async move {
-            ws_task_loop(bind_addr, rx).await;
+            ws_task_loop(listener, rx).await;
         });
 
-        Self { handle }
+        Ok(Self { handle })
     }
 }
 
@@ -98,18 +110,7 @@ impl Drop for WsTask {
     }
 }
 
-async fn ws_task_loop(bind_addr: String, rx: watch::Receiver<LiveFrame>) {
-    let listener = match TcpListener::bind(&bind_addr).await {
-        Ok(listener) => {
-            info!("websocket: listening on {bind_addr}");
-            listener
-        }
-        Err(err) => {
-            error!("websocket: failed to bind {bind_addr}: {err}");
-            return;
-        }
-    };
-
+async fn ws_task_loop(listener: TcpListener, rx: watch::Receiver<LiveFrame>) {
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
@@ -119,7 +120,7 @@ async fn ws_task_loop(bind_addr: String, rx: watch::Receiver<LiveFrame>) {
                 tokio::spawn(handle_client(stream, rx.clone(), client_id, peer_addr.to_string()));
             }
             Err(err) => {
-                warn!("websocket: accept failed on {bind_addr}: {err}");
+                warn!("websocket: accept failed: {err}");
             }
         }
     }
@@ -241,8 +242,20 @@ mod tests {
     #[tokio::test]
     async fn spawn_smoke_test_with_ephemeral_bind() {
         let (_tx, rx) = watch::channel(LiveFrame::idle(0));
-        let task = WsTask::spawn("127.0.0.1:0", rx);
+        let task = WsTask::spawn("127.0.0.1:0", rx).await.expect("spawn ws task");
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         drop(task);
+    }
+
+    #[tokio::test]
+    async fn spawn_fails_fast_when_port_is_already_bound() {
+        let blocker = std::net::TcpListener::bind("127.0.0.1:0").expect("bind blocker");
+        let addr = blocker.local_addr().expect("blocker addr").to_string();
+
+        let (_tx, rx) = watch::channel(LiveFrame::idle(0));
+        let result = WsTask::spawn(&addr, rx).await;
+        assert!(result.is_err());
+
+        drop(blocker);
     }
 }

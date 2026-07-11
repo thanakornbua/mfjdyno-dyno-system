@@ -20,8 +20,8 @@ Important settings:
 
 - Board: `esp32dev`
 - Framework: `arduino`
-- Upload port: `/dev/ttyUSB1`
-- Monitor port: `/dev/ttyUSB1`
+- Upload port: `/dev/ttyUSB0` (single USB cable to the devkit's onboard port; also carries telemetry and config sync)
+- Monitor port: `/dev/ttyUSB0`
 - Upload speed: `921600`
 - Monitor speed: `115200`
 

@@ -44,16 +44,24 @@ use tracing::{error, info, warn};
 use dyno_protocol::DynoFrameV1;
 
 use crate::bme280::AmbientSample;
+use crate::calibration::CalibrationProfile;
 use crate::config::Config;
 use crate::esp32_json::{
     parse_json_telemetry_line, telemetry_ambient_or_stub, telemetry_to_frame, JsonTelemetryMapping,
 };
-use crate::serial_link::open_port;
+use crate::serial_gate::SerialGateWorker;
+use crate::serial_link::{discard_buffered_input, open_port};
 
 /// How long to wait before retrying a failed port open.
 const OPEN_RETRY_DELAY: Duration = Duration::from_secs(5);
 const READ_LINE_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// Opening the serial port resets a UART0-connected ESP32 (DTR/RTS toggled by
+/// the tty driver on open). Give the boot ROM + sketch time to settle and
+/// flush the resulting boot-banner/garbage bytes before reading lines, so
+/// startup noise never counts against `MAX_CONSECUTIVE_FAILURES`.
+const POST_OPEN_SETTLE: Duration = Duration::from_millis(1_500);
 
 /// Yield to the Tokio scheduler after this many decoded frames per read burst.
 const YIELD_EVERY_N_FRAMES: u64 = 32;
@@ -76,11 +84,19 @@ impl SerialTask {
         config: &Config,
         tx: watch::Sender<DynoFrameV1>,
         ambient_tx: watch::Sender<AmbientSample>,
+        gate: SerialGateWorker,
+        calibration_rx: watch::Receiver<CalibrationProfile>,
     ) -> Self {
         let port_path = config.serial_port.clone();
         let baud      = config.serial_baud;
-        let mapping   = JsonTelemetryMapping::from_runtime_config(config);
-        let handle = tokio::spawn(serial_task_outer(port_path, baud, mapping, tx, ambient_tx));
+        let handle = tokio::spawn(serial_task_outer(
+            port_path,
+            baud,
+            calibration_rx,
+            tx,
+            ambient_tx,
+            gate,
+        ));
         info!("serial task spawned");
         Self { handle }
     }
@@ -99,12 +115,16 @@ impl Drop for SerialTask {
 async fn serial_task_outer(
     port_path: String,
     baud: u32,
-    mapping: JsonTelemetryMapping,
+    calibration_rx: watch::Receiver<CalibrationProfile>,
     tx: watch::Sender<DynoFrameV1>,
     ambient_tx: watch::Sender<AmbientSample>,
+    mut gate: SerialGateWorker,
 ) {
     loop {
-        let port = match open_json_port(&port_path, baud) {
+        // Park here while a flash (or other exclusive user) holds the port.
+        gate.wait_until_desired_open().await;
+
+        let mut port = match open_json_port(&port_path, baud) {
             Ok(p) => {
                 info!("serial: opened {port_path} at {baud} baud");
                 p
@@ -119,7 +139,20 @@ async fn serial_task_outer(
             }
         };
 
-        match serial_read_loop(port, mapping, &tx, &ambient_tx).await {
+        // Opening the port resets the ESP32 (DTR/RTS toggled by the tty
+        // driver). Let the boot ROM + sketch settle, then discard whatever
+        // boot-banner/garbage bytes accumulated so the reader starts on a
+        // clean line boundary.
+        tokio::time::sleep(POST_OPEN_SETTLE).await;
+        if let Err(e) = discard_buffered_input(&mut port).await {
+            warn!("serial: failed to clear input buffer after open: {e}");
+        }
+
+        gate.publish_actual(true);
+        let exit = serial_read_loop(port, &calibration_rx, &tx, &ambient_tx, &mut gate).await;
+        gate.publish_actual(false);
+
+        match exit {
             LoopExit::ReceiverDropped => {
                 info!("serial: all watch receivers dropped — task stopping");
                 return;
@@ -130,6 +163,9 @@ async fn serial_task_outer(
                      — reopening in {OPEN_RETRY_DELAY:?}"
                 );
                 tokio::time::sleep(OPEN_RETRY_DELAY).await;
+            }
+            LoopExit::Suspended => {
+                info!("serial: suspended for exclusive port access (e.g. firmware flash)");
             }
         }
     }
@@ -142,29 +178,39 @@ enum LoopExit {
     ReceiverDropped,
     /// A serial I/O error; the caller should reopen the port.
     IoError(io::Error),
+    /// The gate requested exclusive access to the port; the caller should
+    /// park (not retry-delay) until it's released.
+    Suspended,
 }
 
 async fn serial_read_loop(
     port: tokio_serial::SerialStream,
-    mapping: JsonTelemetryMapping,
+    calibration_rx: &watch::Receiver<CalibrationProfile>,
     tx: &watch::Sender<DynoFrameV1>,
     ambient_tx: &watch::Sender<AmbientSample>,
+    gate: &mut SerialGateWorker,
 ) -> LoopExit {
     let mut reader = BufReader::new(port);
     let mut total = 0u64;
     let mut consecutive_failures = 0u32;
 
     loop {
-        let mut line = String::new();
-        let read = match tokio::time::timeout(READ_LINE_TIMEOUT, reader.read_line(&mut line)).await
-        {
+        let mut raw = Vec::new();
+        let read = tokio::select! {
+            biased;
+            _ = gate.wait_until_suspend_requested() => {
+                return LoopExit::Suspended;
+            }
+            result = tokio::time::timeout(READ_LINE_TIMEOUT, reader.read_until(b'\n', &mut raw)) => result,
+        };
+        let read = match read {
             Ok(Ok(read)) => read,
             Ok(Err(e)) => {
                 consecutive_failures += 1;
                 if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
                     warn!(
                         failures = consecutive_failures,
-                        "serial: repeated JSON line read failures; closing port"
+                        "serial: repeated line read failures; closing port"
                     );
                     return LoopExit::IoError(e);
                 }
@@ -201,23 +247,22 @@ async fn serial_read_loop(
             continue;
         }
 
+        // The link may carry boot-ROM garbage or non-UTF8 noise (e.g. right
+        // after an ESP32 reset on UART0); decode it lossily rather than
+        // treating it as a read error — `parse_json_telemetry_line` already
+        // skips anything that isn't a JSON object line.
+        let line = String::from_utf8_lossy(&raw);
         let telemetry = match parse_json_telemetry_line(&line) {
             Ok(Some(telemetry)) => telemetry,
             Ok(None) => continue,
             Err(e) => {
-                consecutive_failures += 1;
-                if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
-                    warn!(
-                        failures = consecutive_failures,
-                        "serial: repeated JSON parse failures; closing port"
-                    );
-                    return LoopExit::IoError(io::Error::new(io::ErrorKind::InvalidData, e));
-                }
+                warn!("serial: skipping malformed telemetry line: {e}");
                 continue;
             }
         };
 
         consecutive_failures = 0;
+        let mapping = JsonTelemetryMapping::from_calibration(&calibration_rx.borrow());
         let frame = telemetry_to_frame(&telemetry, mapping);
         let ambient = telemetry_ambient_or_stub(&telemetry);
         total += 1;
