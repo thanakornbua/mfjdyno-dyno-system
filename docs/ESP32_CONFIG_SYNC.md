@@ -35,7 +35,7 @@ schema:
 }
 ```
 
-The UART fields (pins 1/3, 115200 baud) match the ESP32's onboard USB-UART bridge on UART0 — the single cable that also carries flashing. See "Single-cable wiring" in [OPERATIONS.md](/home/thanakornb/dyno-system/docs/OPERATIONS.md).
+The UART fields (pins 1/3, 115200 baud) match the ESP32's onboard USB-UART bridge on UART0 — the single cable that also carries flashing. See "Single-cable wiring" in [OPERATIONS.md](OPERATIONS.md).
 
 Review this file before running a real pull. It is intended to keep production
 startup from failing on first boot or after an incomplete deploy, not to replace
