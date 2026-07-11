@@ -36,7 +36,7 @@
 use std::io;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 use tokio::task::{self, JoinHandle};
 use tracing::{error, info, warn};
@@ -190,18 +190,45 @@ async fn serial_read_loop(
     ambient_tx: &watch::Sender<AmbientSample>,
     gate: &mut SerialGateWorker,
 ) -> LoopExit {
-    let mut reader = BufReader::new(port);
+    let mut port = port;
     let mut total = 0u64;
     let mut consecutive_failures = 0u32;
+    // Bytes accumulated across read() calls until a full line is seen. This
+    // buffer — unlike `BufReader::read_until`'s internal state — is never
+    // touched by a cancelled future, so a `tokio::time::timeout` firing
+    // mid-read can never drop or duplicate bytes: `AsyncReadExt::read` only
+    // returns (and only then do we touch `line_buf`) once data has actually
+    // arrived, so a timed-out read is guaranteed to have read nothing.
+    let mut line_buf: Vec<u8> = Vec::new();
+    let mut scratch = [0u8; 512];
 
     loop {
-        let mut raw = Vec::new();
+        // A line may already be sitting in `line_buf` from a previous read()
+        // that returned more than one line's worth of bytes at once.
+        if let Some(pos) = line_buf.iter().position(|&b| b == b'\n') {
+            let raw: Vec<u8> = line_buf.drain(..=pos).collect();
+            if !process_line(
+                &raw,
+                &calibration_rx,
+                tx,
+                ambient_tx,
+                &mut total,
+                &mut consecutive_failures,
+            ) {
+                return LoopExit::ReceiverDropped;
+            }
+            if total % YIELD_EVERY_N_FRAMES == 0 {
+                task::yield_now().await;
+            }
+            continue;
+        }
+
         let read = tokio::select! {
             biased;
             _ = gate.wait_until_suspend_requested() => {
                 return LoopExit::Suspended;
             }
-            result = tokio::time::timeout(READ_LINE_TIMEOUT, reader.read_until(b'\n', &mut raw)) => result,
+            result = tokio::time::timeout(READ_LINE_TIMEOUT, port.read(&mut scratch)) => result,
         };
         let read = match read {
             Ok(Ok(read)) => read,
@@ -247,37 +274,46 @@ async fn serial_read_loop(
             continue;
         }
 
-        // The link may carry boot-ROM garbage or non-UTF8 noise (e.g. right
-        // after an ESP32 reset on UART0); decode it lossily rather than
-        // treating it as a read error — `parse_json_telemetry_line` already
-        // skips anything that isn't a JSON object line.
-        let line = String::from_utf8_lossy(&raw);
-        let telemetry = match parse_json_telemetry_line(&line) {
-            Ok(Some(telemetry)) => telemetry,
-            Ok(None) => continue,
-            Err(e) => {
-                warn!("serial: skipping malformed telemetry line: {e}");
-                continue;
-            }
-        };
-
         consecutive_failures = 0;
-        let mapping = JsonTelemetryMapping::from_calibration(&calibration_rx.borrow());
-        let frame = telemetry_to_frame(&telemetry, mapping);
-        let ambient = telemetry_ambient_or_stub(&telemetry);
-        total += 1;
-        if tx.send(frame).is_err() {
-            info!(
-                "serial: all receivers dropped after {total} frames \
-                 — task stopping"
-            );
-            return LoopExit::ReceiverDropped;
-        }
-        let _ = ambient_tx.send(ambient);
-        if total % YIELD_EVERY_N_FRAMES == 0 {
-            task::yield_now().await;
-        }
+        line_buf.extend_from_slice(&scratch[..read]);
     }
+}
+
+/// Decode and forward one newline-terminated line. Returns `false` if all
+/// watch receivers were dropped and the caller should stop.
+fn process_line(
+    raw: &[u8],
+    calibration_rx: &watch::Receiver<CalibrationProfile>,
+    tx: &watch::Sender<DynoFrameV1>,
+    ambient_tx: &watch::Sender<AmbientSample>,
+    total: &mut u64,
+    consecutive_failures: &mut u32,
+) -> bool {
+    // The link may carry boot-ROM garbage or non-UTF8 noise (e.g. right
+    // after an ESP32 reset on UART0); decode it lossily rather than
+    // treating it as a read error — `parse_json_telemetry_line` already
+    // skips anything that isn't a JSON object line.
+    let line = String::from_utf8_lossy(raw);
+    let telemetry = match parse_json_telemetry_line(&line) {
+        Ok(Some(telemetry)) => telemetry,
+        Ok(None) => return true,
+        Err(e) => {
+            warn!("serial: skipping malformed telemetry line: {e}");
+            return true;
+        }
+    };
+
+    *consecutive_failures = 0;
+    let mapping = JsonTelemetryMapping::from_calibration(&calibration_rx.borrow());
+    let frame = telemetry_to_frame(&telemetry, mapping);
+    let ambient = telemetry_ambient_or_stub(&telemetry);
+    *total += 1;
+    if tx.send(frame).is_err() {
+        info!("serial: all receivers dropped after {total} frames — task stopping");
+        return false;
+    }
+    let _ = ambient_tx.send(ambient);
+    true
 }
 
 // ── Port configuration ────────────────────────────────────────────────────────
