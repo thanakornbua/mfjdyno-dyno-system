@@ -661,15 +661,36 @@ impl Storage {
             .context("storage worker dropped set-setting reply")?
     }
 
-    pub async fn get_system_password(&self) -> anyhow::Result<String> {
-        Ok(self
-            .get_setting("system_password")
-            .await?
-            .unwrap_or_else(|| "MFJ123456".to_owned()))
+    /// Returns `None` if no password has been set yet (first-boot state).
+    pub async fn get_system_password(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting("system_password").await
+    }
+
+    pub async fn is_system_password_set(&self) -> anyhow::Result<bool> {
+        Ok(self.get_system_password().await?.is_some())
     }
 
     pub async fn set_system_password(&self, new_password: &str) -> anyhow::Result<()> {
         self.set_setting("system_password", new_password).await
+    }
+
+    /// Operator-selected serial device the backend reads ESP telemetry from.
+    /// `None` means unset (fall back to autodetect / env).
+    pub async fn get_read_serial_port(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting("read_serial_port").await
+    }
+
+    pub async fn set_read_serial_port(&self, path: &str) -> anyhow::Result<()> {
+        self.set_setting("read_serial_port", path).await
+    }
+
+    /// Operator-selected serial device used to flash ESP firmware.
+    pub async fn get_flash_serial_port(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting("flash_serial_port").await
+    }
+
+    pub async fn set_flash_serial_port(&self, path: &str) -> anyhow::Result<()> {
+        self.set_setting("flash_serial_port", path).await
     }
 
     pub async fn flush(&self) -> anyhow::Result<()> {
@@ -737,7 +758,7 @@ fn storage_worker(
             .context("failed to apply SQLite schema")?;
         apply_storage_migrations(&conn)?;
         initialize_default_calibration_profile(&conn, &bootstrap_profile)?;
-        initialize_default_system_password(&conn)?;
+        initialize_system_password_from_env(&conn)?;
         Ok(conn)
     });
 
@@ -992,15 +1013,17 @@ fn initialize_default_calibration_profile(
     Ok(())
 }
 
-fn initialize_default_system_password(conn: &Connection) -> anyhow::Result<()> {
+/// Seeds the system password from `DYNO_SYSTEM_PASSWORD` for unattended
+/// installs. If unset, no password is stored — the system stays in
+/// first-boot state until an operator sets one via the setup endpoint.
+fn initialize_system_password_from_env(conn: &Connection) -> anyhow::Result<()> {
     if db_get_setting(conn, "system_password")?.is_none() {
-        // DYNO_SYSTEM_PASSWORD lets installers avoid shipping the built-in
-        // default; it is only consulted when no password is stored yet.
-        let initial = std::env::var("DYNO_SYSTEM_PASSWORD")
+        if let Some(initial) = std::env::var("DYNO_SYSTEM_PASSWORD")
             .ok()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "MFJ123456".to_owned());
-        db_set_setting(conn, "system_password", &initial)?;
+        {
+            db_set_setting(conn, "system_password", &initial)?;
+        }
     }
     Ok(())
 }
@@ -2302,6 +2325,7 @@ mod tests {
             modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
             db_path: db_path.display().to_string(),
             esp32_config_path: "esp32-device-config.json".to_owned(),
             esp32_applied_config_path: "esp32-last-applied.json".to_owned(),

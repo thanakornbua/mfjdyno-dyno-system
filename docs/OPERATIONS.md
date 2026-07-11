@@ -11,14 +11,76 @@
 - Operator console install root: `/opt/dyno-operator-console`
 - Operator console env file: `/etc/dyno/operator-console.env`
 
+## First boot
+
+`dynod` is self-provisioning: it does not depend on the directory it is launched from.
+
+- On startup it resolves a fixed **data directory** and creates it if missing: `DYNO_DATA_DIR` if set, else `/var/lib/dyno` if usable, else `$XDG_DATA_HOME/dyno` (falling back to `~/.local/share/dyno`). The resolved path is logged as `data_dir` in the startup "Effective configuration" block.
+- `DYNO_STORAGE_DB_PATH`/`DYNO_DB_PATH`, `DYNO_ESP32_CONFIG_PATH`, and `DYNO_ESP32_APPLIED_CONFIG_PATH` are anchored inside the data directory unless you set them to an explicit path yourself.
+- No system password is baked in. `GET /api/system/setup-status` returns `{"password_set": false}` until an operator sets one. The JavaFX console detects this on launch (and when Machine Configuration is opened) and shows a **first-time setup wizard**.
+- For unattended installs, preseed the password by setting `DYNO_SYSTEM_PASSWORD` in the environment before the very first launch of a new database; the first-boot wizard is skipped once a password already exists.
+- If a second `dynod` instance is started against the same ports, it now fails fast with a clear "already running?" error instead of starting up half-alive with WS/API unbound.
+
+### First-time setup wizard
+
+The JavaFX console runs a four-step wizard on first boot:
+
+1. **Create system password** — `POST /api/system/setup-password`.
+2. **Select ESP device** — the operator picks, from a dropdown of detected serial ports (`GET /api/system/serial-devices`), a single port for the ESP32. Saved via `POST /api/system/devices`. **A single USB cable to the ESP32 devkit's onboard USB port carries telemetry, config sync, and firmware flashing** — the wizard submits the same path as both the read and flash port. (Both settings still exist on the backend for back-compat with older two-cable installs; see "Single-cable wiring" below.) The read port is persisted (`read_serial_port` setting) and overrides autodetection at startup — precedence is: explicit `DYNO_SERIAL_PORT` env (non-`auto`) > persisted read port > autodetect.
+3. **Dependency check (informational)** — `GET /api/system/dependencies` lists every dependency the backend checked at startup (see "Dependency check" below) with an ok/missing/unknown indicator and remediation text. Missing optional dependencies never block advancing. This step deliberately sits **before** flashing so the operator sees toolchain status first; if `arduino-cli` or the esp32 core is missing, the next step disables flashing.
+4. **Flash ESP firmware (optional)** — `POST /api/system/flash-esp` runs `arduino-cli compile` then `upload` against the chosen flash port (equivalent to `tools/flash-esp32.sh`); progress is polled from `GET /api/system/flash-esp/status`. The operator can skip this step. Flashing automatically suspends the live telemetry reader for the duration of the upload (expect a ~5–10 s telemetry gap around a flash) and resumes it afterward.
+
+The firmware sketch is **embedded in the `dynod` binary**, so no firmware sources need to be shipped to the machine — if `DYNO_FLASH_SKETCH` doesn't exist on disk, the built-in firmware is staged to a temp directory and flashed automatically. In-app flashing therefore only requires `arduino-cli` on `PATH` and the esp32 core installed. Configure via `DYNO_FLASH_TOOL` (default `arduino-cli`), `DYNO_FLASH_FQBN` (default `esp32:esp32:esp32`), and `DYNO_FLASH_SKETCH` (default `firmware/firmware-test` — used when present, e.g. a dev checkout, otherwise the embedded firmware is used). `POST /api/system/flash-esp` runs the dependency check before starting: if any dependency with `blocks_flashing: true` (arduino-cli, esp32 core) is an explicit `missing`, it refuses with `400 {"error": "cannot flash: the flash toolchain is incomplete. ..."}` (the body includes the remediation text) rather than starting a doomed job; an `unknown` status does not block. If no `flash_serial_port` is configured, flashing falls back to the persisted read port, then to the runtime-resolved serial port — so a single-cable setup needs no separate flash-port configuration at all.
+
+### Single-cable wiring
+
+The ESP32 is wired for **one USB cable** between the Pi and the devkit's onboard USB port: telemetry (newline-delimited JSON), the binary config-sync protocol, and firmware flashing all share it (UART0 / `Serial` on the ESP32 side). There is no external UART adapter and no GPIO wiring to the ESP32's Serial2 pins.
+
+Two behaviors follow directly from sharing one physical UART0 port between the backend and the bootloader:
+
+- **Opening the port resets the ESP32.** The tty driver asserts DTR/RTS on open, which triggers the devkit's auto-reset circuit. Every `dynod` (re)start and every reconnect after a serial hiccup causes a brief (~1–2 s) telemetry gap and resets onboard counters (e.g. encoder totals). The reader tolerates the resulting boot-ROM noise and re-syncs cleanly; this is expected behavior, not a fault.
+- **Flashing needs exclusive access to the same port the live reader holds.** `POST /api/system/flash-esp` asks the reader to release the port before invoking `arduino-cli upload`, and lets it resume afterward (see `crates/dyno-core/src/serial_gate.rs`). If the reader doesn't confirm release within 5 s, the flash request is rejected with `409 Conflict` instead of racing esptool for the port.
+
+Migrating an existing two-cable installation: unplug the external UART adapter, connect the devkit's onboard USB port to the Pi, and either delete `esp32-device-config.json` (so it regenerates with the new UART0 defaults) or edit its `uart_tx_pin`/`uart_rx_pin`/`uart_baud` fields to match the firmware's fixed report (pins 1/3, 115200 baud) — a mismatch here fails startup config sync with `DangerousLiveChange`.
+
+### Dependency check
+
+`crates/dyno-core/src/deps.rs` consolidates the dependency/package checks that used to be scattered across `flash.rs` (arduino-cli preflight) and `detect.rs` (device enumeration) into a single `check_dependencies(&Config) -> Vec<DependencyCheck>`. Each result is `{ name, category, required, status, detail, remediation, blocks_flashing }`, with `status` one of `ok | missing | unknown`. `blocks_flashing` marks the dependencies whose absence makes an ESP flash attempt pointless — the flash endpoint gate and the setup wizard key off this flag rather than dependency names. Example entry:
+
+```json
+{
+  "name": "arduino_cli",
+  "category": "flash-toolchain",
+  "required": false,
+  "status": "missing",
+  "detail": "'arduino-cli' was not found on PATH; ESP32 firmware flashing is unavailable",
+  "remediation": "Install arduino-cli (https://arduino.github.io/arduino-cli) ...",
+  "blocks_flashing": true
+}
+```
+
+Checks performed:
+
+| name | category | required | blocks_flashing | notes |
+| --- | --- | --- | --- | --- |
+| `arduino_cli` | `flash-toolchain` | no | yes | on `PATH`? Reuses the same PATH-scan helper as the flash preflight. |
+| `arduino_esp32_core` | `flash-toolchain` | no | yes | best-effort `arduino-cli core list` with a 5s timeout; `unknown` if arduino-cli is absent or the command doesn't respond in time. |
+| `firmware_sketch` | `flash-toolchain` | no | no | always `ok` — either the configured sketch is present on disk, or the embedded fallback (built into the `dynod` binary) is used. |
+| `serial_device` | `device` | yes in `live` source mode, no in `replay` | no | via `detect::list_serial_devices()`. |
+| `can_interface` | `device` | no | no | best-effort presence check under `/sys/class/net`; `unknown` is expected and fine on deployments with no CAN AFR source. |
+
+At startup, `dynod` runs this check once (after device autodetection) and logs one summary line per dependency (`info` for ok/optional-missing, `warn` for a missing *required* dependency). Missing optional dependencies never fail startup. The same report is available live via `GET /api/system/dependencies` → `{ "dependencies": [...] }`, and is what step 4 of the first-time setup wizard displays.
+
 ## Backend environment
 
-- `DYNO_DB_PATH`: SQLite database path. Use `/var/lib/dyno/dyno.db` in production.
+- `DYNO_DATA_DIR`: fixed per-machine data directory for the database and ESP32 config files. See "First boot" above.
+- `DYNO_DB_PATH`: SQLite database path. Defaults to `dyno.db` inside the data directory; set an absolute path to override.
 - `DYNO_SOURCE_MODE`: `live` or `replay`.
 - `DYNO_PROFILE`: use `production` for ESP32 JSON UART + SocketCAN AEM UEGO + no Modbus AFR.
-- `DYNO_SERIAL_PORT`: UART device path for live JSON ingest, usually `/dev/ttyUSB0`.
+- `DYNO_SERIAL_PORT`: UART device path for live JSON ingest. Default `auto` scans `/dev/serial/by-id` for the ESP32's onboard USB-UART bridge (CP210x, CH340, or a native USB-CDC/Espressif bridge), falling back to `/dev/ttyUSB0`; set an explicit path to pin it. An explicit value here also overrides any read port chosen in the first-time setup wizard.
 - `DYNO_SERIAL_BAUD`: UART baud rate, usually `115200`.
-- `DYNO_CAN_IFACE`: SocketCAN interface for AEM UEGO AFR, usually `can0`.
+- `DYNO_FLASH_TOOL`, `DYNO_FLASH_FQBN`, `DYNO_FLASH_SKETCH`: in-app ESP flashing settings (defaults `arduino-cli`, `esp32:esp32:esp32`, `firmware/firmware-test`). See "First-time setup wizard" above.
+- `DYNO_CAN_IFACE`: SocketCAN interface for AEM UEGO AFR. Default `auto` picks the first CAN-type interface under `/sys/class/net`, falling back to `can0`; set an explicit interface to pin it.
 - `DYNO_MODBUS_AFR_ENABLED`: legacy AFR path flag. Keep `false` in production.
 - `DYNO_BME280_ENABLED`: `true` or `false`.
 - `DYNO_WS_BIND`: websocket bind address, usually `0.0.0.0:9000`.
@@ -96,9 +158,9 @@ RUST_LOG=info
 DYNO_STORAGE_DB_PATH=/var/lib/dyno/runs-rust.db
 DYNO_PROFILE=production
 DYNO_SOURCE_MODE=live
-DYNO_SERIAL_PORT=/dev/ttyUSB0
+DYNO_SERIAL_PORT=auto
 DYNO_SERIAL_BAUD=115200
-DYNO_CAN_IFACE=can0
+DYNO_CAN_IFACE=auto
 DYNO_MODBUS_AFR_ENABLED=false
 DYNO_BME280_ENABLED=true
 DYNO_WS_BIND=0.0.0.0:9000
@@ -159,5 +221,16 @@ DYNO_API_BIND=0.0.0.0:9001
 
 - The HTTP API (:9001) and WebSocket (:9000) have **no authentication**. The default env files bind `0.0.0.0`, exposing run history, run control, calibration, and run deletion to the whole LAN. On installs where the operator console runs on the same machine as `dynod`, bind to loopback instead: `DYNO_WS_BIND=127.0.0.1:9000`, `DYNO_API_BIND=127.0.0.1:9001`. Otherwise keep the dyno network isolated/firewalled.
 - `POST /api/dev/seed-run` is disabled unless `DYNO_ENABLE_DEV_API=true` (or a debug build). Do not enable it in production env files.
-- The system password (calibration unlock) is stored in the `settings` table. On first start it defaults to a built-in value; set `DYNO_SYSTEM_PASSWORD` in the environment for the very first launch of a new database to choose your own. Changing it later is a DB update on the `system_password` key.
+- The system password (calibration unlock and Machine Configuration) is stored in the `settings` table under the `system_password` key. There is no built-in default — see "First boot" above for how it gets set the first time. Changing it later goes through `POST /api/system/password` (requires the current password) rather than a direct DB edit.
 - The `frames` table grows without bound (one row per telemetry frame per recorded run, ~100 Hz). On a busy shop machine, periodically delete old runs from the operator console (deletes cascade to frames) or via `DELETE /api/runs/:id`, then reclaim space with `sqlite3 /var/lib/dyno/dyno.db 'VACUUM;'` while `dynod` is stopped.
+
+## Password reset
+
+If the system password is lost:
+
+1. Stop the backend: `sudo systemctl stop dynod`.
+2. Clear the stored password: `sqlite3 /var/lib/dyno/dyno.db "DELETE FROM settings WHERE key='system_password';"` (adjust the path if `DYNO_DATA_DIR`/`DYNO_DB_PATH` point elsewhere).
+3. Restart the backend: `sudo systemctl start dynod`.
+4. Open the operator console; the first-time setup dialog reappears so a new password can be created.
+
+A full wipe (all runs, calibration profiles, and the password) is the same idea but deletes the whole data directory instead of one setting: stop `dynod`, `rm -rf /var/lib/dyno` (or wherever `data_dir` resolved to — check the startup log), then restart. The backend recreates everything from scratch on next boot.

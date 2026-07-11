@@ -205,6 +205,26 @@ public final class OperatorConsoleStage {
         stage.show();
         webSocketClient.start();
         startHealthPolling();
+        checkFirstBootPasswordSetup();
+    }
+
+    /**
+     * On first boot the backend has no system password configured yet. Prompt
+     * the operator to create one before they can reach Machine Configuration.
+     * If the backend is unreachable at this point, skip silently — the
+     * password gate itself falls back to the same setup flow when opened.
+     */
+    private void checkFirstBootPasswordSetup() {
+        CompletableFuture.runAsync(() -> {
+            try {
+                if (!calibrationApiClient.getSetupStatus().isPasswordSet()) {
+                    Platform.runLater(() -> FirstBootSetupDialog.show(stage));
+                }
+            } catch (Exception ignored) {
+                // Backend unreachable or not yet ready; the password gate
+                // will redirect to setup when Machine Configuration is opened.
+            }
+        }, controlExecutor);
     }
 
     private final com.dyno.presenter.RunPageDirector runPageDirector =

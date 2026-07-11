@@ -202,7 +202,7 @@ Firmware:
 - Location: `firmware/`
 - Framework: PlatformIO with Arduino ESP32.
 - Board: `esp32dev`.
-- Upload port: `/dev/ttyUSB1`.
+- Upload port: `/dev/ttyUSB0` (single USB cable to the devkit's onboard port also carries telemetry and config sync).
 - Monitor speed: `115200`.
 - Dependencies include Adafruit BME280 and Adafruit Unified Sensor libraries.
 

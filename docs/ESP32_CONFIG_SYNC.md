@@ -20,20 +20,22 @@ schema:
 
 ```json
 {
-  "engine_pulse_pin": 4,
+  "engine_pulse_pin": 27,
   "engine_pulses_per_rev": 1.0,
-  "engine_edge_mode": "rising",
-  "encoder_pin_a": 5,
-  "encoder_ppr": 60,
-  "can_rx_pin": 21,
-  "can_tx_pin": 22,
+  "engine_edge_mode": "falling",
+  "encoder_pin_a": 34,
+  "encoder_ppr": 1024,
+  "can_rx_pin": 0,
+  "can_tx_pin": 0,
   "can_bitrate": 500000,
-  "uart_tx_pin": 17,
-  "uart_rx_pin": 16,
-  "uart_baud": 921600,
+  "uart_tx_pin": 1,
+  "uart_rx_pin": 3,
+  "uart_baud": 115200,
   "telemetry_rate_hz": 20
 }
 ```
+
+The UART fields (pins 1/3, 115200 baud) match the ESP32's onboard USB-UART bridge on UART0 — the single cable that also carries flashing. See "Single-cable wiring" in [OPERATIONS.md](/home/thanakornb/dyno-system/docs/OPERATIONS.md).
 
 Review this file before running a real pull. It is intended to keep production
 startup from failing on first boot or after an incomplete deploy, not to replace

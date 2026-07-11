@@ -36,12 +36,6 @@ public final class HealthApiContractTest {
                 + "\"summary\":\"optional I2C device /dev/i2c-1 is missing; ambient reads will fall back to stub values\""
                 + "},"
                 + "{"
-                + "\"name\":\"stm_device\","
-                + "\"required\":false,"
-                + "\"status\":\"degraded\","
-                + "\"summary\":\"STM device /dev/ttySTM0 is missing; STM telemetry checks will stay unavailable until it appears\""
-                + "},"
-                + "{"
                 + "\"name\":\"uart_bridge\","
                 + "\"required\":true,"
                 + "\"status\":\"degraded\","
@@ -55,7 +49,7 @@ public final class HealthApiContractTest {
         assertEquals("degraded", health.getStatus());
         assertEquals("live", health.getSourceMode());
         assertNotNull(health.getChecks());
-        assertEquals(5, health.getChecks().size());
+        assertEquals(4, health.getChecks().size());
         assertEquals("serial_port", health.getChecks().get(1).getName());
         assertEquals("degraded", health.getChecks().get(1).getStatus());
         assertFalse(Boolean.TRUE.equals(health.getChecks().get(2).getRequired()));

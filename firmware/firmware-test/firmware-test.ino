@@ -8,15 +8,16 @@
 //     Ignition     -> GPIO27  (LM393 digital output)
 //     BME280 SDA   -> GPIO21
 //     BME280 SCL   -> GPIO22
-//     Serial2 RX   -> GPIO16
-//     Serial2 TX   -> GPIO17
 //   Pi:
 //     CAN bus is handled on the Pi via USB CAN adapter
+//     Single USB cable to the devkit's onboard USB-UART bridge (UART0 /
+//     `Serial`) carries telemetry, the binary config-sync protocol, AND
+//     firmware flashing — no external UART adapter or GPIO wiring needed.
 //
 // Flash with arduino-cli:
 //   arduino-cli core install esp32:esp32
 //   arduino-cli compile --fqbn esp32:esp32:esp32 firmware-test
-//   arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/ttyUSB1 firmware-test
+//   arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/ttyUSB0 firmware-test
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -30,8 +31,18 @@ static constexpr uint8_t  PIN_ENC_Z   = 32;
 static constexpr uint8_t  PIN_IGN     = 27;
 static constexpr uint8_t  PIN_SDA     = 21;
 static constexpr uint8_t  PIN_SCL     = 22;
-static constexpr uint8_t  PIN_U2_RX   = 16;
-static constexpr uint8_t  PIN_U2_TX   = 17;
+// Telemetry + config-sync protocol run on UART0 (`Serial`), the same pins as
+// the devkit's onboard USB-UART bridge, so a single USB cable carries data,
+// config sync, and flashing. Reported here only for the config-sync
+// DEVICE_INFO/CONFIG_DATA payload; UART0 is not separately initialized.
+static constexpr uint8_t  PIN_U0_RX   = 3;
+static constexpr uint8_t  PIN_U0_TX   = 1;
+
+// Set to 1 to enable verbose per-sample debug printing on the same stream as
+// telemetry. Leave at 0 in normal operation — the JSON line already uses
+// most of the 115200 baud budget at the configured telemetry rate, and any
+// non-JSON line sharing the stream is downstream-safe but wasted bandwidth.
+#define DYNO_DEBUG_LOG 0
 
 static constexpr uint16_t ENC_PPR     = 1024;     // encoder lines per revolution
 static constexpr uint16_t ENC_CPR     = ENC_PPR * 4;
@@ -493,7 +504,7 @@ static void ignition_update() {
 }
 
 // ================================================================
-//  Rust startup config sync compatibility protocol on Serial2
+//  Rust startup config sync compatibility protocol on Serial (UART0)
 // ================================================================
 
 static uint8_t proto_rx[FRAME_SIZE] = {};
@@ -545,7 +556,7 @@ static void wr_f32(uint8_t *packet, uint8_t offset, float value) {
 static void finish_response(uint8_t *packet) {
     uint16_t crc = crc16_ccitt_false(packet, CRC_OFFSET);
     wr_u16(packet, CRC_OFFSET, crc);
-    Serial2.write(packet, FRAME_SIZE);
+    Serial.write(packet, FRAME_SIZE);
 }
 
 static void init_response(uint8_t *packet, uint8_t packet_type, uint32_t seq) {
@@ -565,8 +576,8 @@ static void encode_fixed_config(uint8_t *packet) {
     packet[17] = 0;       // CAN RX unused on ESP32
     packet[18] = 0;       // CAN TX unused on ESP32
     wr_u32(packet, 19, 500000);
-    packet[23] = PIN_U2_TX;
-    packet[24] = PIN_U2_RX;
+    packet[23] = PIN_U0_TX;
+    packet[24] = PIN_U0_RX;
     wr_u32(packet, 25, 115200);
     wr_u16(packet, 29, (uint16_t)(1000 / TELEM_MS));
 }
@@ -640,8 +651,8 @@ static void handle_protocol_packet(const uint8_t *packet) {
 }
 
 static void poll_protocol_commands() {
-    while (Serial2.available() > 0) {
-        uint8_t b = (uint8_t)Serial2.read();
+    while (Serial.available() > 0) {
+        uint8_t b = (uint8_t)Serial.read();
 
         if (proto_rx_len == 0) {
             if (b != 0x59) {
@@ -680,7 +691,6 @@ static void poll_protocol_commands() {
 
 void setup() {
     Serial.begin(115200);
-    Serial2.begin(115200, SERIAL_8N1, PIN_U2_RX, PIN_U2_TX);
     delay(500);
 
     Serial.println();
@@ -688,7 +698,7 @@ void setup() {
     Serial.println("[boot] ESP32 dyno telemetry node");
     Serial.println("[boot] CAN removed from ESP32; Pi owns CAN via USB adapter");
     Serial.println("[boot] USB debug on Serial @ 115200");
-    Serial.println("[boot] Runtime telemetry on Serial2 @ 115200");
+    Serial.println("[boot] Runtime telemetry on Serial @ 115200");
 
     encoder_init();
     Serial.printf("[encoder]  OK   A=GPIO%u  B=GPIO%u  Z=GPIO%u  PPR=%u  CPR=%u\n",
@@ -709,7 +719,6 @@ void setup() {
                   bme_ok ? "OK  " : "FAIL",
                   PIN_SDA, PIN_SCL, bme_addr);
 
-    Serial.printf("[Serial2]  OK   RX=GPIO%u  TX=GPIO%u  baud=115200\n", PIN_U2_RX, PIN_U2_TX);
     Serial.println("[telemetry] fields=seq,ts_us,engine_rpm,roller_rpm,encoder_count,encoder_delta,temp_c,humidity,pressure,afr,lambda,engine_valid,encoder_valid,bme_valid,can_valid");
     Serial.println("=== ready ===");
 }
@@ -735,6 +744,7 @@ void loop() {
     encoder_tick();
     bme_read();
 
+#if DYNO_DEBUG_LOG
     if (enc_delta != 0) {
         Serial.printf("[encoder] d=%ld c=%ld rpm=%.1f\n", (long)enc_delta, (long)enc_total, enc_rpm);
     }
@@ -752,6 +762,7 @@ void loop() {
                       (unsigned long)accepted_pulses,
                       (unsigned long)timeout_count);
     }
+#endif
 
     char buf[384];
     snprintf(
@@ -788,5 +799,5 @@ void loop() {
         bme_valid ? "true" : "false"
     );
 
-    Serial2.println(buf);
+    Serial.println(buf);
 }

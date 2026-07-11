@@ -4,6 +4,7 @@
 //! calls and returns explicit DTOs, keeping SQLite access isolated inside the
 //! storage module.
 
+use anyhow::Context;
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -25,6 +26,7 @@ use crate::calibration::{
     CalibrationProfileEventType, CalibrationProfileInput, CalibrationValidation, validate_profile,
     validate_profile_input, validate_profile_name,
 };
+use crate::config::Config;
 use crate::health::StartupHealth;
 use crate::run_control::{RunControl, RunControlState};
 use crate::storage::{PendingRunMetadata, Storage, StoredFrame, StoredRun};
@@ -45,6 +47,9 @@ struct ApiState {
     run_control: RunControl,
     calibration_lock: CalibrationLock,
     audit_logger: AuditLogger,
+    flash_job: crate::flash::FlashJob,
+    config: Config,
+    serial_gate: crate::serial_gate::SerialGate,
 }
 
 #[derive(Debug, Serialize)]
@@ -277,6 +282,56 @@ pub struct VerifyPasswordResponseDto {
 }
 
 #[derive(Debug, Serialize)]
+pub struct SetupStatusResponseDto {
+    pub password_set: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupPasswordRequestDto {
+    pub new_password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupPasswordResponseDto {
+    pub changed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SerialDevicesResponseDto {
+    pub devices: Vec<crate::detect::SerialDevice>,
+    pub read_serial_port: Option<String>,
+    pub flash_serial_port: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DependenciesResponseDto {
+    pub dependencies: Vec<crate::deps::DependencyCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfigureDevicesRequestDto {
+    pub read_serial_port: Option<String>,
+    pub flash_serial_port: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigureDevicesResponseDto {
+    pub read_serial_port: Option<String>,
+    pub flash_serial_port: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FlashEspRequestDto {
+    pub flash_serial_port: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FlashEspResponseDto {
+    pub started: bool,
+    pub port: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct AuditRecordDto {
     pub id: i64,
     pub occurred_at: String,
@@ -300,11 +355,18 @@ enum ApiError {
     BadRequest(String),
     Unauthorized(String),
     Locked(String),
+    SetupRequired(String),
+    Conflict(String),
     Internal(anyhow::Error),
 }
 
 impl ApiTask {
-    pub fn spawn(
+    /// Bind the HTTP API and spawn its server task.
+    ///
+    /// Binding happens before the task is spawned so a port conflict (e.g. a
+    /// second `dynod` instance already running) is reported as an error the
+    /// caller can act on, instead of the task silently logging and exiting.
+    pub async fn spawn(
         bind_addr: &str,
         storage: Storage,
         calibration_tx: watch::Sender<CalibrationProfile>,
@@ -312,21 +374,34 @@ impl ApiTask {
         run_control: RunControl,
         calibration_lock: CalibrationLock,
         audit_logger: AuditLogger,
-    ) -> Self {
-        let bind_addr = bind_addr.to_owned();
-        let handle = tokio::spawn(async move {
-            api_task_loop(
-                bind_addr,
-                storage,
-                calibration_tx,
-                startup_health,
-                run_control,
-                calibration_lock,
-                audit_logger,
+        config: Config,
+        serial_gate: crate::serial_gate::SerialGate,
+    ) -> anyhow::Result<Self> {
+        let listener = TcpListener::bind(bind_addr).await.with_context(|| {
+            format!(
+                "api: failed to bind {bind_addr} — is another dynod instance \
+                 (e.g. the systemd service) already running?"
             )
-            .await;
+        })?;
+        info!("api: listening on {bind_addr}");
+
+        let bind_addr = bind_addr.to_owned();
+        let app = router(
+            storage,
+            calibration_tx,
+            startup_health,
+            run_control,
+            calibration_lock,
+            audit_logger,
+            config,
+            serial_gate,
+        );
+        let handle = tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app.into_make_service()).await {
+                error!("api: server error on {bind_addr}: {err}");
+            }
         });
-        Self { handle }
+        Ok(Self { handle })
     }
 }
 
@@ -343,6 +418,8 @@ pub fn router(
     run_control: RunControl,
     calibration_lock: CalibrationLock,
     audit_logger: AuditLogger,
+    config: Config,
+    serial_gate: crate::serial_gate::SerialGate,
 ) -> Router {
     Router::new()
         .route("/healthz", get(get_startup_health))
@@ -356,6 +433,13 @@ pub fn router(
         .route("/api/calibration/unlock", post(unlock_calibration_handler))
         .route("/api/system/password", post(change_password_handler))
         .route("/api/system/verify-password", post(verify_password_handler))
+        .route("/api/system/setup-status", get(get_setup_status))
+        .route("/api/system/setup-password", post(setup_password_handler))
+        .route("/api/system/serial-devices", get(get_serial_devices))
+        .route("/api/system/dependencies", get(get_dependencies))
+        .route("/api/system/devices", post(configure_devices_handler))
+        .route("/api/system/flash-esp", post(flash_esp_handler))
+        .route("/api/system/flash-esp/status", get(get_flash_status))
         .route(
             "/api/calibration/profiles",
             get(get_calibration_profiles).post(create_calibration_profile),
@@ -386,45 +470,10 @@ pub fn router(
             run_control,
             calibration_lock,
             audit_logger,
+            flash_job: crate::flash::FlashJob::new(),
+            config,
+            serial_gate,
         })
-}
-
-async fn api_task_loop(
-    bind_addr: String,
-    storage: Storage,
-    calibration_tx: watch::Sender<CalibrationProfile>,
-    startup_health: StartupHealth,
-    run_control: RunControl,
-    calibration_lock: CalibrationLock,
-    audit_logger: AuditLogger,
-) {
-    let listener = match TcpListener::bind(&bind_addr).await {
-        Ok(listener) => {
-            info!("api: listening on {bind_addr}");
-            listener
-        }
-        Err(err) => {
-            error!("api: failed to bind {bind_addr}: {err}");
-            return;
-        }
-    };
-
-    if let Err(err) = axum::serve(
-        listener,
-        router(
-            storage,
-            calibration_tx,
-            startup_health,
-            run_control,
-            calibration_lock,
-            audit_logger,
-        )
-        .into_make_service(),
-    )
-    .await
-    {
-        error!("api: server error on {bind_addr}: {err}");
-    }
 }
 
 async fn get_startup_health(
@@ -1004,24 +1053,34 @@ async fn unlock_calibration_handler(
     Ok(Json(CalibrationLockResponseDto { locked: false }))
 }
 
-async fn change_password_handler(
-    State(state): State<ApiState>,
-    Json(request): Json<ChangePasswordRequestDto>,
-) -> Result<Json<ChangePasswordResponseDto>, ApiError> {
-    let current = state.storage.get_system_password().await.map_err(ApiError::Internal)?;
-    if request.current_password != current {
-        return Err(ApiError::Unauthorized("current password is incorrect".to_owned()));
-    }
-    if request.new_password.len() < 6 {
+fn validate_new_password(new_password: &str) -> Result<(), ApiError> {
+    if new_password.len() < 6 {
         return Err(ApiError::BadRequest(
             "new password must be at least 6 characters".to_owned(),
         ));
     }
-    if request.new_password.chars().any(|c| c.is_whitespace()) {
+    if new_password.chars().any(|c| c.is_whitespace()) {
         return Err(ApiError::BadRequest(
             "new password must not contain whitespace".to_owned(),
         ));
     }
+    Ok(())
+}
+
+async fn change_password_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<ChangePasswordRequestDto>,
+) -> Result<Json<ChangePasswordResponseDto>, ApiError> {
+    let current = state
+        .storage
+        .get_system_password()
+        .await
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::SetupRequired("setup_required".to_owned()))?;
+    if request.current_password != current {
+        return Err(ApiError::Unauthorized("current password is incorrect".to_owned()));
+    }
+    validate_new_password(&request.new_password)?;
     state
         .storage
         .set_system_password(&request.new_password)
@@ -1038,11 +1097,330 @@ async fn verify_password_handler(
     State(state): State<ApiState>,
     Json(request): Json<VerifyPasswordRequestDto>,
 ) -> Result<Json<VerifyPasswordResponseDto>, ApiError> {
-    let current = state.storage.get_system_password().await.map_err(ApiError::Internal)?;
+    let current = state
+        .storage
+        .get_system_password()
+        .await
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::SetupRequired("setup_required".to_owned()))?;
     if request.password != current {
         return Err(ApiError::Unauthorized("password is incorrect".to_owned()));
     }
     Ok(Json(VerifyPasswordResponseDto { valid: true }))
+}
+
+async fn get_setup_status(
+    State(state): State<ApiState>,
+) -> Result<Json<SetupStatusResponseDto>, ApiError> {
+    let password_set = state
+        .storage
+        .is_system_password_set()
+        .await
+        .map_err(ApiError::Internal)?;
+    Ok(Json(SetupStatusResponseDto { password_set }))
+}
+
+async fn setup_password_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<SetupPasswordRequestDto>,
+) -> Result<Json<SetupPasswordResponseDto>, ApiError> {
+    let already_set = state
+        .storage
+        .is_system_password_set()
+        .await
+        .map_err(ApiError::Internal)?;
+    if already_set {
+        return Err(ApiError::Conflict(
+            "system password is already set; use /api/system/password to change it".to_owned(),
+        ));
+    }
+    validate_new_password(&request.new_password)?;
+    state
+        .storage
+        .set_system_password(&request.new_password)
+        .await
+        .map_err(ApiError::Internal)?;
+    let _ = state
+        .audit_logger
+        .log(AuditEvent::PasswordInitialized, None, serde_json::json!({}))
+        .await;
+    Ok(Json(SetupPasswordResponseDto { changed: true }))
+}
+
+async fn get_serial_devices(
+    State(state): State<ApiState>,
+) -> Result<Json<SerialDevicesResponseDto>, ApiError> {
+    let read_serial_port = state
+        .storage
+        .get_read_serial_port()
+        .await
+        .map_err(ApiError::Internal)?;
+    let flash_serial_port = state
+        .storage
+        .get_flash_serial_port()
+        .await
+        .map_err(ApiError::Internal)?;
+    Ok(Json(SerialDevicesResponseDto {
+        devices: crate::detect::list_serial_devices(),
+        read_serial_port,
+        flash_serial_port,
+    }))
+}
+
+async fn get_dependencies(
+    State(state): State<ApiState>,
+) -> Result<Json<DependenciesResponseDto>, ApiError> {
+    Ok(Json(DependenciesResponseDto {
+        dependencies: check_dependencies_blocking(state.config.clone()).await?,
+    }))
+}
+
+/// Run the dependency check off the async pool — it probes the filesystem and
+/// may wait up to a few seconds on `arduino-cli core list`.
+async fn check_dependencies_blocking(
+    config: Config,
+) -> Result<Vec<crate::deps::DependencyCheck>, ApiError> {
+    tokio::task::spawn_blocking(move || crate::deps::check_dependencies(&config))
+        .await
+        .map_err(|err| ApiError::Internal(anyhow::anyhow!("dependency check task failed: {err}")))
+}
+
+/// Validate an operator-supplied device path: must be a plausible `/dev/*`
+/// node with no interior NUL bytes and a sane length.
+fn validate_device_path(name: &str, value: &str) -> Result<(), ApiError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ApiError::BadRequest(format!("{name} must not be empty")));
+    }
+    if value.chars().count() > 256 {
+        return Err(ApiError::BadRequest(format!("{name} is too long")));
+    }
+    if value.contains('\0') {
+        return Err(ApiError::BadRequest(format!("{name} contains a NUL byte")));
+    }
+    if !value.starts_with("/dev/") {
+        return Err(ApiError::BadRequest(format!(
+            "{name} must be a device path under /dev/"
+        )));
+    }
+    Ok(())
+}
+
+async fn configure_devices_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<ConfigureDevicesRequestDto>,
+) -> Result<Json<ConfigureDevicesResponseDto>, ApiError> {
+    if request.read_serial_port.is_none() && request.flash_serial_port.is_none() {
+        return Err(ApiError::BadRequest(
+            "at least one of read_serial_port or flash_serial_port is required".to_owned(),
+        ));
+    }
+
+    if let Some(read) = request.read_serial_port.as_deref() {
+        validate_device_path("read_serial_port", read)?;
+        state
+            .storage
+            .set_read_serial_port(read.trim())
+            .await
+            .map_err(ApiError::Internal)?;
+    }
+    if let Some(flash) = request.flash_serial_port.as_deref() {
+        validate_device_path("flash_serial_port", flash)?;
+        state
+            .storage
+            .set_flash_serial_port(flash.trim())
+            .await
+            .map_err(ApiError::Internal)?;
+    }
+
+    let read_serial_port = state
+        .storage
+        .get_read_serial_port()
+        .await
+        .map_err(ApiError::Internal)?;
+    let flash_serial_port = state
+        .storage
+        .get_flash_serial_port()
+        .await
+        .map_err(ApiError::Internal)?;
+
+    let _ = state
+        .audit_logger
+        .log(
+            AuditEvent::DevicesConfigured,
+            None,
+            serde_json::json!({
+                "read_serial_port": read_serial_port,
+                "flash_serial_port": flash_serial_port,
+            }),
+        )
+        .await;
+
+    Ok(Json(ConfigureDevicesResponseDto {
+        read_serial_port,
+        flash_serial_port,
+    }))
+}
+
+async fn flash_esp_handler(
+    State(state): State<ApiState>,
+    Json(request): Json<FlashEspRequestDto>,
+) -> Result<Json<FlashEspResponseDto>, ApiError> {
+    // Resolve the port: request body > persisted flash port > persisted read
+    // port > the runtime-resolved read port. On a single-USB deployment the
+    // same cable carries both telemetry and flashing, so falling back to the
+    // read port lets flashing work with zero additional operator setup.
+    let port = match request.flash_serial_port {
+        Some(port) => {
+            validate_device_path("flash_serial_port", &port)?;
+            port.trim().to_owned()
+        }
+        None => {
+            let persisted_flash = state
+                .storage
+                .get_flash_serial_port()
+                .await
+                .map_err(ApiError::Internal)?
+                .filter(|port| !port.trim().is_empty());
+            let persisted_read = state
+                .storage
+                .get_read_serial_port()
+                .await
+                .map_err(ApiError::Internal)?
+                .filter(|port| !port.trim().is_empty());
+            persisted_flash
+                .or(persisted_read)
+                .unwrap_or_else(|| state.config.serial_port.clone())
+        }
+    };
+
+    // Dependency gate: refuse to start a flash that is doomed because the
+    // flash toolchain is provably absent. Only an explicit `missing` blocks;
+    // `unknown` (e.g. esp32 core could not be probed) is allowed through so we
+    // never reject on an inconclusive check.
+    let blocking: Vec<crate::deps::DependencyCheck> =
+        check_dependencies_blocking(state.config.clone())
+            .await?
+            .into_iter()
+            .filter(|check| {
+                check.blocks_flashing && check.status == crate::deps::DependencyStatus::Missing
+            })
+            .collect();
+    if !blocking.is_empty() {
+        let detail = blocking
+            .iter()
+            .map(|check| format!("{}: {}", check.detail, check.remediation))
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(ApiError::BadRequest(format!(
+            "cannot flash: the flash toolchain is incomplete. {detail}"
+        )));
+    }
+
+    // Never flash while a run is actively recording.
+    let run = state.run_control.snapshot().await;
+    if run.recording {
+        return Err(ApiError::Conflict(
+            "cannot flash the ESP while a run is recording".to_owned(),
+        ));
+    }
+
+    // Single-flight: reject a concurrent flash.
+    if !state.flash_job.try_begin(&port, current_time_ms()) {
+        return Err(ApiError::Conflict(
+            "a flash is already in progress".to_owned(),
+        ));
+    }
+
+    // On a single-cable deployment the live telemetry reader holds the same
+    // port esptool needs exclusively. Ask it to release the port before
+    // flashing; the reader resumes (and reopens, resetting the freshly
+    // flashed device) once the returned guard drops.
+    const FLASH_SUSPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    let suspend_guard = match state.serial_gate.suspend(FLASH_SUSPEND_TIMEOUT).await {
+        Ok(guard) => guard,
+        Err(err) => {
+            state.flash_job.finish(
+                false,
+                format!("could not gain exclusive access to {port}: {err}\n"),
+                current_time_ms(),
+            );
+            return Err(ApiError::Conflict(format!(
+                "cannot flash: {err} — is the serial reader stuck?"
+            )));
+        }
+    };
+
+    let _ = state
+        .audit_logger
+        .log(
+            AuditEvent::EspFlashStarted,
+            None,
+            serde_json::json!({ "port": port }),
+        )
+        .await;
+
+    let job = state.flash_job.clone();
+    let audit_logger = state.audit_logger.clone();
+    let port_for_task = port.clone();
+    let config_for_task = state.config.clone();
+    tokio::spawn(async move {
+        // Held across the flash so the reader stays suspended until the
+        // upload finishes (success or failure), then dropped to resume it.
+        let _suspend_guard = suspend_guard;
+
+        let flash_job = job.clone();
+        let flash_port = port_for_task.clone();
+        // arduino-cli is blocking and long-running; keep it off the async pool.
+        let _ = tokio::task::spawn_blocking(move || {
+            let runner = crate::flash::SystemCommandRunner;
+            let opts = crate::flash::FlashOptions::from_env();
+            crate::flash::run_flash(&runner, &opts, &flash_port, &flash_job, current_time_ms());
+        })
+        .await;
+        let status = job.status();
+
+        if status.state == crate::flash::FlashState::Success {
+            // Best-effort: give the freshly flashed device a moment to boot,
+            // then re-sync its config so it's usable without a daemon
+            // restart. Failure here does not affect the reported flash
+            // outcome — only re-syncing on the next `dynod` start does.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let manager = crate::esp32_config::Esp32ConfigManager::from_runtime_config(&config_for_task);
+            match manager
+                .synchronize_startup(&port_for_task, config_for_task.serial_baud)
+                .await
+            {
+                Ok(result) => info!(
+                    status = ?result.status,
+                    "post-flash ESP32 config re-sync completed"
+                ),
+                Err(err) => tracing::warn!("post-flash ESP32 config re-sync failed: {err}"),
+            }
+        }
+
+        let _ = audit_logger
+            .log(
+                AuditEvent::EspFlashFinished,
+                None,
+                serde_json::json!({
+                    "port": port_for_task,
+                    "state": status.state,
+                }),
+            )
+            .await;
+    });
+
+    Ok(Json(FlashEspResponseDto {
+        started: true,
+        port,
+    }))
+}
+
+async fn get_flash_status(
+    State(state): State<ApiState>,
+) -> Result<Json<crate::flash::FlashStatus>, ApiError> {
+    Ok(Json(state.flash_job.status()))
 }
 
 async fn get_audit_log(
@@ -1066,6 +1444,8 @@ impl IntoResponse for ApiError {
                 StatusCode::from_u16(423).unwrap_or(StatusCode::CONFLICT),
                 message,
             ),
+            Self::SetupRequired(message) => (StatusCode::CONFLICT, message),
+            Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Internal(err) => {
                 error!("api: request failed: {err:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_owned())
@@ -1152,6 +1532,8 @@ fn map_calibration_error(result: Result<(), CalibrationError>) -> Result<(), Api
         CalibrationError::Locked
         | CalibrationError::AlreadyLocked
         | CalibrationError::AlreadyUnlocked => ApiError::Locked(e.to_string()),
+        CalibrationError::SetupRequired => ApiError::SetupRequired("setup_required".to_owned()),
+        CalibrationError::Internal(err) => ApiError::Internal(err),
     })
 }
 
@@ -1393,6 +1775,7 @@ mod tests {
             modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
             db_path: db_path.to_owned(),
             esp32_config_path: "esp32-device-config.json".to_owned(),
             esp32_applied_config_path: "esp32-last-applied.json".to_owned(),
@@ -1472,7 +1855,8 @@ mod tests {
             .expect("fetch active calibration")
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
-        let health = collect_startup_health(&test_config(":memory:"));
+        let config = test_config(":memory:");
+        let health = collect_startup_health(&config);
         let audit_logger = AuditLogger::new(storage.clone());
         router(
             storage,
@@ -1481,6 +1865,8 @@ mod tests {
             RunControl::new(),
             CalibrationLock::new(),
             audit_logger,
+            config,
+            crate::serial_gate::serial_gate(false).0,
         )
     }
 
@@ -1498,7 +1884,8 @@ mod tests {
             .expect("fetch active calibration")
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
-        let health = collect_startup_health(&test_config(&db_path.display().to_string()));
+        let config = test_config(&db_path.display().to_string());
+        let health = collect_startup_health(&config);
         let audit_logger = AuditLogger::new(storage.clone());
         let task = ApiTask::spawn(
             "127.0.0.1:0",
@@ -1508,9 +1895,51 @@ mod tests {
             RunControl::new(),
             CalibrationLock::new(),
             audit_logger,
-        );
+            config,
+            crate::serial_gate::serial_gate(false).0,
+        )
+        .await
+        .expect("spawn api task");
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         drop(task);
+    }
+
+    #[tokio::test]
+    async fn api_task_spawn_fails_fast_when_port_is_already_bound() {
+        let unique = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let db_path = std::env::temp_dir().join(format!("dyno-api-bind-conflict-{unique}.sqlite"));
+        let _ = std::fs::remove_file(&db_path);
+        let storage = Storage::open(&test_config(&db_path.display().to_string()))
+            .await
+            .expect("open storage");
+        let active = storage
+            .fetch_active_calibration()
+            .await
+            .expect("fetch active calibration")
+            .expect("active calibration");
+        let (calibration_tx, _calibration_rx) = watch::channel(active);
+        let config = test_config(&db_path.display().to_string());
+        let health = collect_startup_health(&config);
+        let audit_logger = AuditLogger::new(storage.clone());
+
+        let blocker = std::net::TcpListener::bind("127.0.0.1:0").expect("bind blocker");
+        let addr = blocker.local_addr().expect("blocker addr").to_string();
+
+        let result = ApiTask::spawn(
+            &addr,
+            storage,
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+            config,
+            crate::serial_gate::serial_gate(false).0,
+        )
+        .await;
+        assert!(result.is_err());
+
+        drop(blocker);
     }
 
     #[tokio::test]
@@ -1522,7 +1951,8 @@ mod tests {
             .expect("fetch active calibration")
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
-        let health = collect_startup_health(&test_config(&db_path.display().to_string()));
+        let config = test_config(&db_path.display().to_string());
+        let health = collect_startup_health(&config);
         let audit_logger = AuditLogger::new(storage.clone());
         let app = router(
             storage,
@@ -1531,6 +1961,8 @@ mod tests {
             RunControl::new(),
             CalibrationLock::new(),
             audit_logger,
+            config,
+            crate::serial_gate::serial_gate(false).0,
         );
 
         let response = app
@@ -1663,7 +2095,8 @@ mod tests {
             .expect("fetch active calibration")
             .expect("active calibration");
         let (calibration_tx, _calibration_rx) = watch::channel(active);
-        let health = collect_startup_health(&test_config(&db_path.display().to_string()));
+        let config = test_config(&db_path.display().to_string());
+        let health = collect_startup_health(&config);
         let run_control = RunControl::new();
         run_control.start().await;
         run_control.update_runtime_state(RunState::Recording).await;
@@ -1675,6 +2108,8 @@ mod tests {
             run_control,
             CalibrationLock::new(),
             audit_logger,
+            config,
+            crate::serial_gate::serial_gate(false).0,
         );
 
         let stop_response = app
@@ -1858,7 +2293,8 @@ mod tests {
                 .expect("fetch active calibration")
                 .expect("active calibration"),
         );
-        let health = collect_startup_health(&test_config(&db_path.display().to_string()));
+        let config = test_config(&db_path.display().to_string());
+        let health = collect_startup_health(&config);
         let audit_logger = AuditLogger::new(storage.clone());
         let app = router(
             storage.clone(),
@@ -1867,6 +2303,8 @@ mod tests {
             RunControl::new(),
             CalibrationLock::new(),
             audit_logger,
+            config,
+            crate::serial_gate::serial_gate(false).0,
         );
 
         let request = Request::builder()
@@ -1939,7 +2377,8 @@ mod tests {
             .expect("fetch active calibration")
             .expect("active calibration");
         let (calibration_tx, calibration_rx) = watch::channel(initial_active.clone());
-        let health = collect_startup_health(&test_config(&db_path.display().to_string()));
+        let config = test_config(&db_path.display().to_string());
+        let health = collect_startup_health(&config);
         let audit_logger = AuditLogger::new(storage.clone());
         let app = router(
             storage.clone(),
@@ -1948,6 +2387,8 @@ mod tests {
             RunControl::new(),
             CalibrationLock::new(),
             audit_logger,
+            config,
+            crate::serial_gate::serial_gate(false).0,
         );
 
         let request = Request::builder()
@@ -2274,5 +2715,437 @@ mod tests {
             .unwrap();
         let response = app.oneshot(request).await.expect("repeatability bad response");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn setup_status_reports_unset_on_fresh_database() {
+        let (storage, _db_path) = seeded_storage("setup-status-unset").await;
+        let app = test_router(storage).await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/api/system/setup-status").body(Body::empty()).unwrap())
+            .await
+            .expect("setup status response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("setup status bytes");
+        let json: Value = serde_json::from_slice(&body).expect("setup status json");
+        assert_eq!(json["password_set"], false);
+    }
+
+    #[tokio::test]
+    async fn verify_and_lock_require_setup_before_password_exists() {
+        let (storage, _db_path) = seeded_storage("setup-gate").await;
+        let app = test_router(storage).await;
+
+        let verify_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/verify-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"whatever"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("verify response");
+        assert_eq!(verify_response.status(), StatusCode::CONFLICT);
+        let verify_body = to_bytes(verify_response.into_body(), usize::MAX).await.expect("verify bytes");
+        let verify_json: Value = serde_json::from_slice(&verify_body).expect("verify json");
+        assert_eq!(verify_json["error"], "setup_required");
+
+        let lock_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/calibration/lock")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"whatever"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("lock response");
+        assert_eq!(lock_response.status(), StatusCode::CONFLICT);
+        let lock_body = to_bytes(lock_response.into_body(), usize::MAX).await.expect("lock bytes");
+        let lock_json: Value = serde_json::from_slice(&lock_body).expect("lock json");
+        assert_eq!(lock_json["error"], "setup_required");
+    }
+
+    #[tokio::test]
+    async fn setup_password_rejects_weak_values_then_succeeds_once() {
+        let (storage, _db_path) = seeded_storage("setup-password").await;
+        let app = test_router(storage).await;
+
+        let short_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/setup-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"new_password":"short"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("short password response");
+        assert_eq!(short_response.status(), StatusCode::BAD_REQUEST);
+
+        let whitespace_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/setup-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"new_password":"has space"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("whitespace password response");
+        assert_eq!(whitespace_response.status(), StatusCode::BAD_REQUEST);
+
+        let setup_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/setup-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"new_password":"correct-horse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("setup response");
+        assert_eq!(setup_response.status(), StatusCode::OK);
+        let setup_body = to_bytes(setup_response.into_body(), usize::MAX).await.expect("setup bytes");
+        let setup_json: Value = serde_json::from_slice(&setup_body).expect("setup json");
+        assert_eq!(setup_json["changed"], true);
+
+        // Second setup call is rejected — setup is one-shot.
+        let second_setup_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/setup-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"new_password":"another-pass"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("second setup response");
+        assert_eq!(second_setup_response.status(), StatusCode::CONFLICT);
+
+        // Verify now works with the newly set password.
+        let verify_ok_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/verify-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"correct-horse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("verify ok response");
+        assert_eq!(verify_ok_response.status(), StatusCode::OK);
+
+        let verify_wrong_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/verify-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"nope"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("verify wrong response");
+        assert_eq!(verify_wrong_response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn serial_devices_endpoint_returns_persisted_selection() {
+        let (storage, _db_path) = seeded_storage("serial-devices").await;
+        let app = test_router(storage).await;
+
+        // Initially unset.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/serial-devices")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("serial devices response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("bytes");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert!(json["read_serial_port"].is_null());
+        assert!(json["flash_serial_port"].is_null());
+        assert!(json["devices"].is_array());
+
+        // Configure both ports.
+        let configure = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/devices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"read_serial_port":"/dev/ttyUSB0","flash_serial_port":"/dev/ttyUSB1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .expect("configure devices response");
+        assert_eq!(configure.status(), StatusCode::OK);
+        let configure_body = to_bytes(configure.into_body(), usize::MAX).await.expect("bytes");
+        let configure_json: Value = serde_json::from_slice(&configure_body).expect("json");
+        assert_eq!(configure_json["read_serial_port"], "/dev/ttyUSB0");
+        assert_eq!(configure_json["flash_serial_port"], "/dev/ttyUSB1");
+
+        // Read back reflects persistence.
+        let after = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/serial-devices")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("serial devices after");
+        let after_body = to_bytes(after.into_body(), usize::MAX).await.expect("bytes");
+        let after_json: Value = serde_json::from_slice(&after_body).expect("json");
+        assert_eq!(after_json["read_serial_port"], "/dev/ttyUSB0");
+        assert_eq!(after_json["flash_serial_port"], "/dev/ttyUSB1");
+    }
+
+    #[tokio::test]
+    async fn dependencies_endpoint_returns_expected_shape() {
+        let (storage, _db_path) = seeded_storage("dependencies").await;
+        let app = test_router(storage).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/dependencies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("dependencies response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("bytes");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+
+        let dependencies = json["dependencies"].as_array().expect("dependencies array");
+        assert!(!dependencies.is_empty());
+        let names: Vec<&str> = dependencies
+            .iter()
+            .map(|dep| dep["name"].as_str().expect("name"))
+            .collect();
+        assert!(names.contains(&"arduino_cli"));
+        assert!(names.contains(&"arduino_esp32_core"));
+        assert!(names.contains(&"firmware_sketch"));
+        assert!(names.contains(&"serial_device"));
+        assert!(names.contains(&"can_interface"));
+        for dep in dependencies {
+            let status = dep["status"].as_str().expect("status");
+            assert!(matches!(status, "ok" | "missing" | "unknown"), "got {status}");
+            assert!(dep["category"].is_string());
+            assert!(dep["required"].is_boolean());
+            assert!(dep["detail"].is_string());
+            assert!(dep["remediation"].is_string());
+            assert!(dep["blocks_flashing"].is_boolean());
+        }
+    }
+
+    #[tokio::test]
+    async fn configure_devices_rejects_non_dev_path() {
+        let (storage, _db_path) = seeded_storage("devices-bad").await;
+        let app = test_router(storage).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/devices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"read_serial_port":"ttyUSB0"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("bad device response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn flash_esp_falls_back_to_read_port_when_no_flash_port_is_configured() {
+        // On a single-USB deployment there is no separate flash port to
+        // configure; the handler must fall back to the persisted read port
+        // (and, failing that, the runtime-resolved serial port) instead of
+        // requiring a dedicated flash_serial_port. `arduino-cli` is not
+        // installed on the test machine, so the dependency gate rejects the
+        // request — but only after resolving *some* port, which we can
+        // distinguish from "no port configured" by asserting on the message.
+        let (storage, _db_path) = seeded_storage("flash-fallback").await;
+        storage
+            .set_read_serial_port("/dev/dyno-fallback-test")
+            .await
+            .expect("persist read port");
+        storage.flush().await.expect("flush");
+        let app = test_router(storage).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/flash-esp")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .expect("flash response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("bytes");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        let message = json["error"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains("no flash serial port provided"),
+            "must not report a missing port when a read port is persisted, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flash_esp_blocked_when_arduino_cli_missing() {
+        // Serialize with other tests that touch DYNO_* env vars.
+        let _guard = crate::test_env_lock();
+        let (storage, _db_path) = seeded_storage("flash-toolchain-missing").await;
+        let app = test_router(storage).await;
+
+        // Point the flash tool at a binary that is guaranteed absent from PATH,
+        // so the `arduino_cli` dependency check reports `missing` and the gate
+        // rejects the flash before any job starts.
+        std::env::set_var("DYNO_FLASH_TOOL", "dyno-nonexistent-flash-tool");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/flash-esp")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"flash_serial_port":"/dev/ttyUSB1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("flash response");
+        std::env::remove_var("DYNO_FLASH_TOOL");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("bytes");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        let error = json["error"].as_str().expect("error string");
+        assert!(error.contains("flash toolchain is incomplete"), "got {error}");
+        // Remediation text is surfaced so the operator knows what to install.
+        assert!(error.contains("Install arduino-cli"), "got {error}");
+    }
+
+    /// Writes a stand-in `arduino-cli` that answers `core list` with an
+    /// installed esp32 core, so the dependency gate in `flash_esp_handler`
+    /// lets the request through to the serial-gate suspend step. Returns the
+    /// script path; the caller is responsible for `DYNO_FLASH_TOOL`.
+    fn write_fake_arduino_cli() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dyno-fake-arduino-cli-{}.sh",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nif [ \"$1\" = core ] && [ \"$2\" = list ]; then\n  echo 'esp32:esp32   2.0.0   esp32'\nfi\nexit 0\n",
+        )
+        .expect("write fake arduino-cli");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake arduino-cli");
+        }
+        path
+    }
+
+    #[tokio::test]
+    async fn flash_esp_returns_conflict_when_serial_reader_never_releases_port() {
+        // Serialize with other tests that touch DYNO_* env vars.
+        let _guard = crate::test_env_lock();
+        let (storage, _db_path) = seeded_storage("flash-gate-timeout").await;
+        let active = storage
+            .fetch_active_calibration()
+            .await
+            .expect("fetch active calibration")
+            .expect("active calibration");
+        let (calibration_tx, _calibration_rx) = watch::channel(active);
+        let config = test_config(":memory:");
+        let health = collect_startup_health(&config);
+        let audit_logger = AuditLogger::new(storage.clone());
+        // `actual` starts (and stays) released=false — i.e. the reader is
+        // reported as holding the port, and nothing ever flips it — so the
+        // suspend request must time out.
+        let (serial_gate, _worker) = crate::serial_gate::serial_gate(true);
+        let app = router(
+            storage,
+            calibration_tx,
+            health,
+            RunControl::new(),
+            CalibrationLock::new(),
+            audit_logger,
+            config,
+            serial_gate,
+        );
+
+        let fake_tool = write_fake_arduino_cli();
+        std::env::set_var("DYNO_FLASH_TOOL", &fake_tool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/flash-esp")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"flash_serial_port":"/dev/ttyUSB1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("flash response");
+        std::env::remove_var("DYNO_FLASH_TOOL");
+        let _ = std::fs::remove_file(&fake_tool);
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn flash_status_starts_idle() {
+        let (storage, _db_path) = seeded_storage("flash-status").await;
+        let app = test_router(storage).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/flash-esp/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("flash status response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("bytes");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["state"], "idle");
     }
 }

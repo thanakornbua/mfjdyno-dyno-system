@@ -13,8 +13,6 @@ use tracing::warn;
 use crate::config::Config;
 use crate::storage::Storage;
 
-const DEFAULT_SYSTEM_PASSWORD: &str = "MFJ123456";
-
 #[derive(Debug, Error)]
 pub enum CalibrationError {
     #[error("calibration is locked")]
@@ -25,6 +23,10 @@ pub enum CalibrationError {
     AlreadyLocked,
     #[error("calibration is not locked")]
     AlreadyUnlocked,
+    #[error("system password has not been set up yet")]
+    SetupRequired,
+    #[error("internal error: {0}")]
+    Internal(anyhow::Error),
 }
 
 const SETTING_CALIBRATION_LOCKED: &str = "calibration_locked";
@@ -69,14 +71,25 @@ impl CalibrationLock {
         }
     }
 
-    pub async fn lock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
-        let expected = match &self.storage {
+    /// Returns the currently configured system password, or
+    /// [`CalibrationError::SetupRequired`] if no password has been set yet
+    /// (including the no-persistence test default). A storage read failure is
+    /// surfaced as [`CalibrationError::Internal`] — it must never masquerade
+    /// as "setup required", which would send a provisioned machine's UI into
+    /// the first-boot wizard.
+    async fn expected_password(&self) -> Result<String, CalibrationError> {
+        match &self.storage {
             Some(storage) => storage
                 .get_system_password()
                 .await
-                .unwrap_or_else(|_| DEFAULT_SYSTEM_PASSWORD.to_owned()),
-            None => DEFAULT_SYSTEM_PASSWORD.to_owned(),
-        };
+                .map_err(CalibrationError::Internal)?
+                .ok_or(CalibrationError::SetupRequired),
+            None => Err(CalibrationError::SetupRequired),
+        }
+    }
+
+    pub async fn lock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
+        let expected = self.expected_password().await?;
         if password != expected {
             return Err(CalibrationError::WrongPassword);
         }
@@ -94,13 +107,7 @@ impl CalibrationLock {
     }
 
     pub async fn unlock_calibration(&self, password: &str) -> Result<(), CalibrationError> {
-        let expected = match &self.storage {
-            Some(storage) => storage
-                .get_system_password()
-                .await
-                .unwrap_or_else(|_| DEFAULT_SYSTEM_PASSWORD.to_owned()),
-            None => DEFAULT_SYSTEM_PASSWORD.to_owned(),
-        };
+        let expected = self.expected_password().await?;
         if password != expected {
             return Err(CalibrationError::WrongPassword);
         }
@@ -665,6 +672,7 @@ mod tests {
             modbus_afr_enabled: false,
             ws_bind: "127.0.0.1:0".to_owned(),
             api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
             db_path: "test.sqlite".to_owned(),
             esp32_config_path: "esp32-device-config.json".to_owned(),
             esp32_applied_config_path: "esp32-last-applied.json".to_owned(),
@@ -708,5 +716,63 @@ mod tests {
         let normalized = sample_input().normalized();
         assert_eq!(normalized.name, "Test profile");
         assert_eq!(normalized.notes.as_deref(), Some("baseline"));
+    }
+
+    #[tokio::test]
+    async fn failing_password_read_is_internal_not_setup_required() {
+        let db_path = std::env::temp_dir().join(format!(
+            "dyno-calibration-storage-err-{}.sqlite",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+        let config = Config {
+            serial_port: "/dev/null".to_owned(),
+            serial_baud: 921_600,
+            can_iface: "can0".to_owned(),
+            profile: "production".to_owned(),
+            modbus_afr_enabled: false,
+            ws_bind: "127.0.0.1:0".to_owned(),
+            api_bind: "127.0.0.1:0".to_owned(),
+            data_dir: ".".to_owned(),
+            db_path: db_path.display().to_string(),
+            esp32_config_path: "esp32-device-config.json".to_owned(),
+            esp32_applied_config_path: "esp32-last-applied.json".to_owned(),
+            esp32_command_timeout_ms: 1_500,
+            esp32_command_retries: 3,
+            bme280_enabled: false,
+            source_mode: crate::config::SourceMode::Replay,
+            correction_mode: CorrectionMode::None,
+            roller_diameter_m: 0.318,
+            encoder_pulses_per_rev: 60.0,
+            roller_inertia_kg_m2: 3.5,
+            sample_window_ms: 100,
+            ui_broadcast_rate_hz: 20,
+            arm_rpm: 1500.0,
+            record_rpm: 2000.0,
+            stop_rpm: 1000.0,
+        };
+
+        let storage = Storage::open(&config).await.expect("open storage");
+        // Break the settings table behind the storage worker's back so the
+        // next password read fails at the SQLite layer.
+        let conn = rusqlite::Connection::open(&db_path).expect("open raw connection");
+        conn.execute("DROP TABLE settings", []).expect("drop settings table");
+        drop(conn);
+
+        let lock = CalibrationLock::with_storage(storage).await;
+        let err = lock
+            .lock_calibration("any-password")
+            .await
+            .err()
+            .expect("lock must fail when storage read fails");
+        assert!(
+            matches!(err, CalibrationError::Internal(_)),
+            "a storage failure must surface as Internal, not {err:?}"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
     }
 }

@@ -1,5 +1,5 @@
-use dyno_core::{app::App, config::Config};
-use tracing::info;
+use dyno_core::{app::App, config::Config, deps, detect};
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -12,8 +12,24 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // ── Config ────────────────────────────────────────────────────────────────
-    let config = Config::from_env();
+    let mut config = Config::from_env()?;
+    detect::resolve_devices(&mut config);
     info!("dyno backend starting\nEffective configuration:\n{config}");
+
+    // ── Dependency check ─────────────────────────────────────────────────────
+    for check in deps::check_dependencies(&config) {
+        let line = format!(
+            "dependency [{}/{}]: {:?} — {}",
+            check.category, check.name, check.status, check.detail
+        );
+        if check.status == deps::DependencyStatus::Ok {
+            info!("{line}");
+        } else if check.required {
+            warn!("{line} (required: {})", check.remediation);
+        } else {
+            info!("{line} (optional: {})", check.remediation);
+        }
+    }
 
     // ── Bootstrap ─────────────────────────────────────────────────────────────
     let _app = App::start(config).await?;

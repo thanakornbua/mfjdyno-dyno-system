@@ -44,7 +44,6 @@ public final class OperatorStatusMapperTest {
                     check("database_path", "ok"),
                     check("serial_port", "degraded"),
                     check("bme280_i2c", "degraded"),
-                    check("stm_device", "degraded"),
                     check("uart_bridge", "degraded")
                 )
             )
@@ -54,8 +53,8 @@ public final class OperatorStatusMapperTest {
         assertTrue(model.isSerialDegraded());
         assertTrue(model.isAmbientDegraded());
         assertEquals("Serial input unavailable — retrying", model.getPrimaryMessage());
-        assertEquals("4 startup warnings active", model.getWarningSummary());
-        assertEquals("Live mode active | 4 startup warnings active", model.getSecondaryMessage());
+        assertEquals("3 startup warnings active", model.getWarningSummary());
+        assertEquals("Live mode active | 3 startup warnings active", model.getSecondaryMessage());
     }
 
     @Test

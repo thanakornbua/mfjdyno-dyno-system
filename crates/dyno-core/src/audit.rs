@@ -18,6 +18,10 @@ pub enum AuditEvent {
     StopRun,
     ResetFault,
     PasswordChanged,
+    PasswordInitialized,
+    DevicesConfigured,
+    EspFlashStarted,
+    EspFlashFinished,
 }
 
 impl std::fmt::Display for AuditEvent {
@@ -30,6 +34,10 @@ impl std::fmt::Display for AuditEvent {
             Self::StopRun => "stop_run",
             Self::ResetFault => "reset_fault",
             Self::PasswordChanged => "password_changed",
+            Self::PasswordInitialized => "password_initialized",
+            Self::DevicesConfigured => "devices_configured",
+            Self::EspFlashStarted => "esp_flash_started",
+            Self::EspFlashFinished => "esp_flash_finished",
         };
         f.write_str(s)
     }
@@ -47,6 +55,10 @@ impl std::str::FromStr for AuditEvent {
             "stop_run" => Ok(Self::StopRun),
             "reset_fault" => Ok(Self::ResetFault),
             "password_changed" => Ok(Self::PasswordChanged),
+            "password_initialized" => Ok(Self::PasswordInitialized),
+            "devices_configured" => Ok(Self::DevicesConfigured),
+            "esp_flash_started" => Ok(Self::EspFlashStarted),
+            "esp_flash_finished" => Ok(Self::EspFlashFinished),
             _ => Err(()),
         }
     }

@@ -10,7 +10,7 @@ The backend binary is `dynod`, built from `crates/dyno-core`.
 
 - `crates/dyno-core/src/main.rs`
   - Initializes tracing.
-  - Loads `Config::from_env()`.
+  - Loads `Config::from_env()` (fallible: propagates data-directory and port-bind failures so the process exits non-zero instead of running half-alive).
   - Starts the top-level `App`.
   - Waits for `SIGTERM`, `SIGINT`, or `ctrl_c`.
 
@@ -30,25 +30,28 @@ Configuration is environment-driven. The backend does not require a config file 
 
 Important variables:
 
-- `DYNO_SERIAL_PORT`: ESP32 UART path, default `/dev/ttyUSB0`.
+- `DYNO_DATA_DIR`: fixed per-machine data directory (see `crates/dyno-core/src/paths.rs`). Precedence: this override → `/var/lib/dyno` if usable → `$XDG_DATA_HOME/dyno` → `~/.local/share/dyno`. Created at startup; failure to create/write any candidate is fatal.
+- `DYNO_SERIAL_PORT`: ESP32 UART path, default `auto` (detects the devkit's onboard USB-UART bridge — CP210x, CH340, or Espressif USB-CDC — under `/dev/serial/by-id`, falls back to `/dev/ttyUSB0`). This single cable also handles firmware flashing; see `serial_gate.rs`.
 - `DYNO_SERIAL_BAUD`: UART baud, default `115200`.
-- `DYNO_CAN_IFACE`: SocketCAN interface, default `can0`.
+- `DYNO_CAN_IFACE`: SocketCAN interface, default `auto` (first CAN-type interface in `/sys/class/net`, falls back to `can0`).
 - `DYNO_PROFILE`: runtime profile label, default `production`.
 - `DYNO_MODBUS_AFR_ENABLED`: legacy path flag, normally `false`.
 - `DYNO_WS_BIND`: WebSocket bind address, default `0.0.0.0:9000`.
 - `DYNO_API_BIND`: HTTP bind address, default `0.0.0.0:9001`.
-- `DYNO_STORAGE_DB_PATH` or `DYNO_DB_PATH`: SQLite database path, default `dyno.db`.
-- `DYNO_ESP32_CONFIG_PATH`: desired ESP32 device config JSON.
-- `DYNO_ESP32_APPLIED_CONFIG_PATH`: persisted last-applied ESP32 config state.
+- `DYNO_STORAGE_DB_PATH` or `DYNO_DB_PATH`: SQLite database path, default `dyno.db` anchored inside `data_dir`. An explicit value (relative or absolute) is used verbatim instead of being anchored.
+- `DYNO_ESP32_CONFIG_PATH`: desired ESP32 device config JSON, default anchored inside `data_dir` the same way.
+- `DYNO_ESP32_APPLIED_CONFIG_PATH`: persisted last-applied ESP32 config state, default anchored inside `data_dir` the same way.
 - `DYNO_SOURCE_MODE`: `live`, `replay`, `sim`, or `simulation`.
 - `DYNO_CORRECTION_MODE`: correction model selector.
 - `DYNO_ARM_RPM`, `DYNO_RECORD_RPM`: run state/recording thresholds.
 - `DYNO_STOP_RPM`: deprecated compatibility setting; parsed but no longer stops runs.
+- `DYNO_SYSTEM_PASSWORD`: seeds the system password on a fresh database only. If unset, no password exists until an operator sets one via `POST /api/system/setup-password`.
 
 Engineering notes:
 
 - `Config` is intentionally plain and cloned into tasks as needed.
-- Tests use direct `Config` construction for deterministic setup.
+- `Config::from_env()` is fallible (`anyhow::Result<Self>`) because it resolves and creates `data_dir` as a side effect; startup fails fast if no candidate directory is writable.
+- Tests use direct `Config` construction (with a `data_dir` field) for deterministic setup; env-driven tests must pin `DYNO_DATA_DIR` to a throwaway temp directory.
 - Add new runtime settings in `Config`, `Config::from_env`, `Display`, and config tests together.
 
 ## Application Composition
@@ -316,12 +319,70 @@ Route groups:
 - Development seeding: `/api/dev/seed-run`
 - Calibration: `/api/calibration*`
 - Run history: `/api/runs*`
+- System password: `/api/system/password`, `/api/system/verify-password`, `/api/system/setup-status`, `/api/system/setup-password` — `setup-status`/`setup-password` implement the first-boot flow (see "First boot" in `docs/OPERATIONS.md`); `verify-password`, `change-password`, and calibration lock/unlock return `409 {"error":"setup_required"}` instead of `401` while no password has been set yet.
+- System devices: `GET /api/system/serial-devices` (enumerated ports + persisted read/flash selection), `POST /api/system/devices` (persist `read_serial_port`/`flash_serial_port`, validated as `/dev/*` paths). The persisted read port overrides autodetection in `app.rs` (precedence: explicit `DYNO_SERIAL_PORT` env > persisted > autodetect).
+- ESP flashing: `POST /api/system/flash-esp` (single-flight; rejects while recording; runs on a background task), `GET /api/system/flash-esp/status` (`idle|running|success|error` + captured log). Implemented in `flash.rs`; see below. Before starting a job the handler runs the dependency check (on `spawn_blocking`) and returns `400 {"error": "cannot flash: the flash toolchain is incomplete. ..."}` (with remediation text) when any check with `blocks_flashing: true` is an explicit `missing`; `unknown` does not block.
+- Dependency check: `GET /api/system/dependencies` → `{ "dependencies": [...] }`, one entry per `deps::check_dependencies` result (`{ name, category, required, status, detail, remediation, blocks_flashing }`, `status` one of `ok|missing|unknown`). Runs on `spawn_blocking` (the check probes the filesystem and may wait on `arduino-cli core list`). Implemented in `deps.rs`; see below.
+
+`ApiTask::spawn` binds its `TcpListener` before spawning the server task and returns `anyhow::Result<Self>`, so a port already in use (e.g. a second `dynod` instance) is a startup error rather than a silently-logged no-op. `WsTask::spawn` (`ws.rs`) follows the same pattern.
 
 Engineering notes:
 
 - Keep API layer thin. Storage access belongs in `storage.rs`.
 - DTO names are explicit and should stay stable for the Java clients.
 - If changing routes or response fields, update Java DTO/client tests in the same change.
+
+## ESP Firmware Flashing
+
+File: `crates/dyno-core/src/flash.rs`
+
+Responsibility:
+
+- Run `arduino-cli compile` then `upload -p <flash_port>` against a configurable sketch/FQBN
+  (defaults match `tools/flash-esp32.sh`; overridable via `DYNO_FLASH_TOOL`/`DYNO_FLASH_FQBN`/
+  `DYNO_FLASH_SKETCH`).
+- Command execution is behind the `CommandRunner` trait so tests inject a fake and assert argv
+  without a real toolchain; `SystemCommandRunner` is the production impl.
+- The firmware sketch is embedded in the binary via `include_str!` and staged to a temp dir when
+  the configured `DYNO_FLASH_SKETCH` is not present on disk, so a binary-only install can flash
+  without shipping firmware sources. An on-disk sketch (dev checkout / explicit path) still wins.
+- `FlashJob` holds single-flight status (`try_begin` guards concurrent flashes); `FlashStatus`
+  is polled by the API. Preflight fails fast with an actionable message when the tool or sketch
+  is missing (no hang); the log is size-capped.
+
+The API runs `run_flash` on `spawn_blocking` (arduino-cli is blocking/long-running) inside a
+spawned task, then writes an `esp_flash_finished` audit record.
+
+## Dependency Check
+
+File: `crates/dyno-core/src/deps.rs`
+
+Consolidates dependency/package checks that were previously scattered across `flash.rs`
+(arduino-cli preflight) and `detect.rs` (device enumeration) into one report:
+`check_dependencies(&Config) -> Vec<DependencyCheck>`.
+
+Checks: `arduino_cli` on `PATH` (reuses `flash::SystemCommandRunner::tool_available`, does not
+reimplement PATH scanning; `flash-toolchain`, optional), `arduino_esp32_core` (best-effort
+`arduino-cli core list` with a 5s timeout so it can never hang; `unknown` if arduino-cli is
+missing or unresponsive), `firmware_sketch` (always `ok` — on-disk sketch or the binary-embedded
+fallback), `serial_device` (via `detect::list_serial_devices()`; required in `live` source mode,
+optional in `replay`), `can_interface` (best-effort presence under `/sys/class/net`; `unknown` is
+expected/fine when no CAN AFR source is wired). Each check carries `blocks_flashing`
+(true for `arduino_cli` and `arduino_esp32_core`) — the single source of truth for which
+dependencies gate the flash endpoint and the wizard's flash button.
+
+`main.rs` runs this once at startup (after device autodetection) and logs one line per
+dependency — `warn` only for a missing *required* dependency, `info` otherwise. Missing optional
+dependencies never fail startup. The same report is exposed live via
+`GET /api/system/dependencies` and is what step 4 of the JavaFX first-boot wizard renders.
+
+## Serial Device Enumeration
+
+File: `crates/dyno-core/src/detect.rs`
+
+Alongside boot-time autodetection, `list_serial_devices()` enumerates `/dev/serial/by-id` plus
+raw `/dev/ttyUSB*`/`/dev/ttyACM*` nodes (de-duplicated by resolved path, ESP32 guesses first)
+for the first-boot device picker.
 
 ## WebSocket Broadcast
 
@@ -349,6 +410,7 @@ Important behavior:
 - Each client gets its own spawned connection task.
 - Suspicious values are logged before send.
 - The server is a raw WebSocket listener on the bind address, not an Axum route.
+- `WsTask::spawn` binds before spawning and returns `anyhow::Result<Self>`; a bind failure is a startup error, not a background log line.
 
 ## Health
 
@@ -396,8 +458,12 @@ High-value test targets:
 - `physics.rs`: unit math and invalid-input handling.
 - `correction.rs`: correction factors and quality.
 - `serial.rs` / `esp32_json.rs`: telemetry parsing and mapping.
-- `ws.rs`: envelope shape.
-- `config.rs`: environment defaults and parsing.
+- `ws.rs`: envelope shape, bind-fails-fast behavior.
+- `config.rs`: environment defaults and parsing, data-directory anchoring.
+- `paths.rs`: data directory resolution precedence and anchoring helpers.
+- `flash.rs`: compile+upload argv, single-flight guard, preflight failures.
+- `detect.rs`: serial device enumeration + de-dup + ESP-guess ordering.
+- `deps.rs`: per-check status/required logic (fixture-based, no real toolchain/hardware).
 
 ## Backend Change Checklist
 

@@ -119,6 +119,7 @@ impl Esp32ConfigManager {
         serial_baud: u32,
     ) -> Result<Esp32ConfigSyncResult, Esp32ConfigError> {
         let mut link = DynoUartLink::open(serial_path, serial_baud)
+            .await
             .map_err(|source| Esp32ConfigError::SerialIo {
                 operation: "open serial port for ESP32 config sync",
                 source: io::Error::new(io::ErrorKind::Other, source.to_string()),
@@ -543,18 +544,22 @@ fn load_config_file(path: &Path) -> Result<DynoConfig, anyhow::Error> {
 }
 
 fn generated_default_config() -> DynoConfig {
+    // Must match the firmware's `encode_fixed_config` (single USB cable to
+    // the devkit's onboard UART0 bridge carries telemetry, config sync, and
+    // flashing) — a mismatch here hard-fails startup sync with
+    // `DangerousLiveChange`.
     DynoConfig {
-        engine_pulse_pin: 4,
+        engine_pulse_pin: 27,
         engine_pulses_per_rev: 1.0,
-        engine_edge_mode: EngineEdgeMode::Rising,
-        encoder_pin_a: 5,
-        encoder_ppr: 60,
-        can_rx_pin: 21,
-        can_tx_pin: 22,
+        engine_edge_mode: EngineEdgeMode::Falling,
+        encoder_pin_a: 34,
+        encoder_ppr: 1024,
+        can_rx_pin: 0,
+        can_tx_pin: 0,
         can_bitrate: 500_000,
-        uart_tx_pin: 17,
-        uart_rx_pin: 16,
-        uart_baud: 921_600,
+        uart_tx_pin: 1,
+        uart_rx_pin: 3,
+        uart_baud: 115_200,
         telemetry_rate_hz: 20,
     }
 }

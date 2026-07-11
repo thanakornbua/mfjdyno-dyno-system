@@ -114,7 +114,7 @@ public final class CalibrationApiClient {
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() == 401 || response.statusCode() == 400) {
+        if (response.statusCode() == 401 || response.statusCode() == 400 || response.statusCode() == 409) {
             throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
         }
         ensureSuccess(response.statusCode(), response.body());
@@ -130,6 +130,87 @@ public final class CalibrationApiClient {
         if (response.statusCode() == 401) {
             throw new LockException(response.statusCode(), "Incorrect password");
         }
+        if (response.statusCode() == 409) {
+            throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
+        }
+        ensureSuccess(response.statusCode(), response.body());
+    }
+
+    public SetupStatusDto getSetupStatus() throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder("/api/system/setup-status")
+            .GET()
+            .build();
+        return send(request, SetupStatusDto.class);
+    }
+
+    public SerialDevicesDto listSerialDevices() throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder("/api/system/serial-devices")
+            .GET()
+            .build();
+        return send(request, SerialDevicesDto.class);
+    }
+
+    public DependencyStatusDto listDependencies() throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder("/api/system/dependencies")
+            .GET()
+            .build();
+        return send(request, DependencyStatusDto.class);
+    }
+
+    public void saveDevices(String readSerialPort, String flashSerialPort)
+            throws IOException, InterruptedException, LockException {
+        java.util.Map<String, String> payload = new java.util.HashMap<>();
+        if (readSerialPort != null && !readSerialPort.isBlank()) {
+            payload.put("read_serial_port", readSerialPort);
+        }
+        if (flashSerialPort != null && !flashSerialPort.isBlank()) {
+            payload.put("flash_serial_port", flashSerialPort);
+        }
+        HttpRequest request = requestBuilder("/api/system/devices")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 400 || response.statusCode() == 409) {
+            throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
+        }
+        ensureSuccess(response.statusCode(), response.body());
+    }
+
+    /** Starts an ESP firmware flash. {@code flashSerialPort} may be null to use the persisted port. */
+    public void flashEsp(String flashSerialPort) throws IOException, InterruptedException, LockException {
+        java.util.Map<String, String> payload = new java.util.HashMap<>();
+        if (flashSerialPort != null && !flashSerialPort.isBlank()) {
+            payload.put("flash_serial_port", flashSerialPort);
+        }
+        HttpRequest request = requestBuilder("/api/system/flash-esp")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 400 || response.statusCode() == 409) {
+            throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
+        }
+        ensureSuccess(response.statusCode(), response.body());
+    }
+
+    public FlashStatusDto getFlashStatus() throws IOException, InterruptedException {
+        HttpRequest request = requestBuilder("/api/system/flash-esp/status")
+            .GET()
+            .build();
+        return send(request, FlashStatusDto.class);
+    }
+
+    public void setupPassword(String newPassword) throws IOException, InterruptedException, LockException {
+        String body = mapper.writeValueAsString(Map.of("new_password", newPassword));
+        HttpRequest request = requestBuilder("/api/system/setup-password")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 400 || response.statusCode() == 409) {
+            throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
+        }
         ensureSuccess(response.statusCode(), response.body());
     }
 
@@ -143,16 +224,27 @@ public final class CalibrationApiClient {
         if (response.statusCode() == 401 || response.statusCode() == 423) {
             throw new LockException(response.statusCode(), response.body());
         }
+        if (response.statusCode() == 409) {
+            throw new LockException(response.statusCode(), extractErrorMessage(response.body()));
+        }
         ensureSuccess(response.statusCode(), response.body());
         return response.body();
     }
 
+    /**
+     * Thrown for 401 (wrong password), 423 (calibration locked), and 409
+     * (system password not set up yet — see {@link #isSetupRequired()}).
+     */
     public static final class LockException extends Exception {
         public final int statusCode;
 
         public LockException(int statusCode, String message) {
             super(message);
             this.statusCode = statusCode;
+        }
+
+        public boolean isSetupRequired() {
+            return statusCode == 409;
         }
     }
 
