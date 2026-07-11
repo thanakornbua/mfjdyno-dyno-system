@@ -368,7 +368,7 @@ public final class OperatorConsoleStage {
                     renderRoot();
                 });
             }
-        }, 0, 15, TimeUnit.MINUTES);
+        }, 0, 15, TimeUnit.SECONDS);
     }
 
     private void handleCompareRequested() {
