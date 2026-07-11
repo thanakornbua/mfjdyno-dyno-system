@@ -8,6 +8,7 @@ import com.dyno.calibration.CalibrationResponseDto;
 import com.dyno.calibration.CalibrationUpsertRequestDto;
 import com.dyno.calibration.CalibrationValidationDto;
 import com.dyno.calibration.DuplicateCalibrationProfileRequestDto;
+import com.dyno.calibration.RollerInertiaCalculator;
 import com.dyno.presenter.OperatorViewModel;
 import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyStringWrapper;
@@ -15,6 +16,7 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Node;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
@@ -26,6 +28,7 @@ import javafx.scene.control.Dialog;
 import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
@@ -37,12 +40,15 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Modality;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 
 import java.io.IOException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -93,6 +99,13 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
     private final TextArea notesInput = new TextArea();
     private final CheckBox activateAfterSaveInput = new CheckBox(UiText.text("Activate after save"));
 
+    private final ObservableList<RollerRow> rollerRows = FXCollections.observableArrayList();
+    private final VBox rollerRowsBox = new VBox(FxTheme.GAP_S);
+    private final Label rollerTotalLabel = new Label();
+    private final Label rollerErrorsLabel = new Label();
+    private final Button addRollerButton = new Button(UiText.text("ADD ROLLER"));
+    private final Button applyRollerInertiaButton = new Button(UiText.text("APPLY TO INERTIA FIELD"));
+
     private final Label lockStatusLabel = new Label();
     private final Button lockButton = new Button(UiText.text("LOCK"));
     private final Button unlockButton = new Button(UiText.text("UNLOCK"));
@@ -127,6 +140,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         DialogPane pane = getDialogPane();
         pane.getButtonTypes().addAll(activateType, ButtonType.CLOSE);
         pane.setContent(buildContent());
+        capHeightToVisualBounds();
 
         installProfileColumns();
         installEventColumns();
@@ -162,6 +176,17 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         return result.orElse(null);
     }
 
+    /** Bounds the dialog to the display's visual area so the ScrollPane engages on small screens (e.g. the deployment Pi). */
+    private void capHeightToVisualBounds() {
+        setOnShowing(event -> {
+            Window window = getDialogPane().getScene() == null ? null : getDialogPane().getScene().getWindow();
+            if (window instanceof Stage) {
+                Rectangle2D visualBounds = Screen.getPrimary().getVisualBounds();
+                ((Stage) window).setMaxHeight(visualBounds.getHeight() - FxTheme.GAP_M * 4);
+            }
+        });
+    }
+
     private Node buildContent() {
         Label title = new Label(UiText.text("CALIBRATION PROFILES"));
         title.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
@@ -172,6 +197,7 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         lockBar = buildLockBar();
         VBox activeBox = titledCard(UiText.text("ACTIVE PROFILE"), activeNameLabel, activeDetailsLabel, activeValidationLabel);
         VBox formBox = buildFormBox();
+        VBox rollerInertiaBox = buildRollerInertiaCalculatorBox();
         VBox auditBox = buildAuditBox();
 
         table.setMinWidth(920);
@@ -189,10 +215,18 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
         statusLabel.setTextFill(FxTheme.TEXT_MUTED);
 
         HBox actions = new HBox(FxTheme.GAP_S, createNewButton, saveButton, duplicateButton);
-        VBox box = new VBox(FxTheme.GAP_M, title, note, lockBar, activeBox, table, actions, formBox, auditBox, runtimeNoteLabel, statusLabel);
+        VBox box = new VBox(
+            FxTheme.GAP_M, title, note, lockBar, activeBox, table, actions, formBox,
+            rollerInertiaBox, auditBox, runtimeNoteLabel, statusLabel
+        );
         box.setPadding(FxTheme.PAD_DIALOG);
         VBox.setVgrow(table, Priority.ALWAYS);
-        return box;
+
+        ScrollPane scrollPane = new ScrollPane(box);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        return scrollPane;
     }
 
     private HBox buildLockBar() {
@@ -250,6 +284,131 @@ public final class CalibrationDialog extends Dialog<CalibrationDialog.Result> {
             warningLabel,
             errorLabel
         );
+    }
+
+    /**
+     * Session-only helper: lets the operator sum the inertia of multiple
+     * rollers (hollow cylinders) on a shared shaft and push the total into
+     * the {@code inertiaInput} field above, which is what actually gets
+     * saved. Row values themselves are never persisted.
+     */
+    private VBox buildRollerInertiaCalculatorBox() {
+        rollerTotalLabel.setStyle("-fx-font-weight: bold;");
+        rollerErrorsLabel.setWrapText(true);
+        rollerErrorsLabel.setTextFill(FxTheme.ALERT);
+
+        GridPane header = new GridPane();
+        header.setHgap(FxTheme.GAP_S);
+        header.addRow(0,
+            new Label(UiText.text("Mass (kg)")),
+            new Label(UiText.text("Outer radius (m)")),
+            new Label(UiText.text("Inner radius (m)")),
+            new Label("")
+        );
+
+        addRollerButton.setOnAction(event -> {
+            rollerRows.add(new RollerRow());
+            renderRollerRows();
+        });
+        applyRollerInertiaButton.setOnAction(event -> {
+            List<RollerInertiaCalculator.Cylinder> cylinders = collectCylinders();
+            if (!RollerInertiaCalculator.validateAll(cylinders).isEmpty()) {
+                return;
+            }
+            inertiaInput.setText(numberText(Double.valueOf(RollerInertiaCalculator.totalInertia(cylinders))));
+            refreshView(null, null);
+        });
+
+        HBox actions = new HBox(FxTheme.GAP_S, addRollerButton, applyRollerInertiaButton);
+        VBox box = titledCard(
+            UiText.text("ROLLER INERTIA CALCULATOR"),
+            header,
+            rollerRowsBox,
+            actions,
+            rollerErrorsLabel,
+            rollerTotalLabel
+        );
+        renderRollerRows();
+        return box;
+    }
+
+    private void renderRollerRows() {
+        rollerRowsBox.getChildren().clear();
+        for (RollerRow row : rollerRows) {
+            rollerRowsBox.getChildren().add(row.buildRow());
+        }
+        recomputeRollerTotal();
+    }
+
+    private void recomputeRollerTotal() {
+        List<RollerInertiaCalculator.Cylinder> cylinders = collectCylinders();
+        List<String> errors = RollerInertiaCalculator.validateAll(cylinders);
+        if (!errors.isEmpty()) {
+            rollerErrorsLabel.setText(String.join("\n", errors));
+            rollerTotalLabel.setText(UiText.text("Total inertia: —"));
+            applyRollerInertiaButton.setDisable(true);
+            return;
+        }
+        rollerErrorsLabel.setText("");
+        double total = RollerInertiaCalculator.totalInertia(cylinders);
+        rollerTotalLabel.setText(UiText.text("Total inertia: ") + formatDouble(Double.valueOf(total), 4, "kg·m²"));
+        applyRollerInertiaButton.setDisable(cylinders.isEmpty());
+    }
+
+    private List<RollerInertiaCalculator.Cylinder> collectCylinders() {
+        List<RollerInertiaCalculator.Cylinder> cylinders = new ArrayList<RollerInertiaCalculator.Cylinder>();
+        for (RollerRow row : rollerRows) {
+            cylinders.add(row.toCylinder());
+        }
+        return cylinders;
+    }
+
+    /** One editable mass/outer-radius/inner-radius row in the calculator table. */
+    private final class RollerRow {
+        private final TextField massInput = new TextField();
+        private final TextField outerRadiusInput = new TextField();
+        private final TextField innerRadiusInput = new TextField();
+
+        private HBox buildRow() {
+            massInput.setPromptText(UiText.text("Mass (kg)"));
+            outerRadiusInput.setPromptText(UiText.text("Outer radius (m)"));
+            innerRadiusInput.setPromptText(UiText.text("Inner radius (m)"));
+            massInput.textProperty().addListener((obs, oldValue, newValue) -> recomputeRollerTotal());
+            outerRadiusInput.textProperty().addListener((obs, oldValue, newValue) -> recomputeRollerTotal());
+            innerRadiusInput.textProperty().addListener((obs, oldValue, newValue) -> recomputeRollerTotal());
+
+            Button removeButton = new Button(UiText.text("REMOVE"));
+            removeButton.setOnAction(event -> {
+                rollerRows.remove(this);
+                renderRollerRows();
+            });
+
+            HBox row = new HBox(FxTheme.GAP_S, massInput, outerRadiusInput, innerRadiusInput, removeButton);
+            HBox.setHgrow(massInput, Priority.ALWAYS);
+            HBox.setHgrow(outerRadiusInput, Priority.ALWAYS);
+            HBox.setHgrow(innerRadiusInput, Priority.ALWAYS);
+            return row;
+        }
+
+        private RollerInertiaCalculator.Cylinder toCylinder() {
+            return new RollerInertiaCalculator.Cylinder(
+                parseFieldDouble(massInput.getText()),
+                parseFieldDouble(outerRadiusInput.getText()),
+                parseFieldDouble(innerRadiusInput.getText())
+            );
+        }
+
+        private double parseFieldDouble(String raw) {
+            String text = normalizeText(raw);
+            if (text.isEmpty()) {
+                return 0.0;
+            }
+            try {
+                return Double.parseDouble(text);
+            } catch (NumberFormatException error) {
+                return Double.NaN;
+            }
+        }
     }
 
     private VBox buildAuditBox() {

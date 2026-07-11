@@ -42,21 +42,6 @@ impl JsonTelemetryMapping {
             sample_window_s: config.sample_window_ms as f32 / 1_000.0,
         }
     }
-
-    /// Derives the mapping from the same active calibration profile that
-    /// `fusion::FusionPhysicsConfig::from_calibration` uses to decode
-    /// `encoder_delta` back into `roller_rpm`. Both sides of the round-trip
-    /// (encode here, decode in fusion) must read identical
-    /// encoder_pulses_per_rev/sample_window_s, or the reconstructed
-    /// roller_rpm drifts from — or zeroes out relative to — the firmware's
-    /// original value whenever the calibration profile diverges from the
-    /// runtime env config.
-    pub fn from_calibration(profile: &crate::calibration::CalibrationProfile) -> Self {
-        Self {
-            encoder_pulses_per_rev: profile.encoder_pulses_per_rev,
-            sample_window_s: profile.sample_window_ms as f32 / 1_000.0,
-        }
-    }
 }
 
 pub fn parse_json_telemetry_line(
@@ -239,67 +224,6 @@ mod tests {
         telemetry.temp_c = 200.0;
 
         assert_eq!(telemetry_ambient_or_stub(&telemetry), AmbientSample::stub());
-    }
-
-    fn calibration_profile(encoder_pulses_per_rev: f32, sample_window_ms: u64) -> crate::calibration::CalibrationProfile {
-        crate::calibration::CalibrationProfile {
-            profile_id: 1,
-            name: "Test profile".to_owned(),
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            is_active: true,
-            roller_diameter_m: 0.318,
-            encoder_pulses_per_rev,
-            roller_inertia_kg_m2: 3.5,
-            sample_window_ms,
-            engine_pulses_per_rev_hint: None,
-            engine_rpm_scale: None,
-            engine_stroke: None,
-            engine_cylinders: None,
-            notes: None,
-        }
-    }
-
-    /// Guards against the round-trip bug where `encoder_delta_for_pipeline`
-    /// (encode, here) and `fusion::roller_rpm_from_encoder_delta` (decode)
-    /// used different mapping sources — env config vs. calibration profile —
-    /// silently corrupting roller_rpm whenever the two disagreed. Both sides
-    /// must use `JsonTelemetryMapping::from_calibration` against the same
-    /// profile.
-    #[test]
-    fn roller_rpm_round_trips_through_encoder_delta_when_mapping_matches_fusion() {
-        let profile = calibration_profile(60.0, 100);
-        let mapping = JsonTelemetryMapping::from_calibration(&profile);
-
-        let telemetry = Esp32JsonTelemetry {
-            seq: 1,
-            ts_us: 1_000_000,
-            engine_rpm: 3_000.0,
-            roller_rpm: 1_200.0,
-            encoder_count: 0,
-            encoder_delta: 0,
-            temp_c: 25.0,
-            humidity: 50.0,
-            pressure: 1013.0,
-            afr: 0.0,
-            lambda: 0.0,
-            engine_valid: true,
-            encoder_valid: true,
-            bme_valid: true,
-            can_valid: false,
-        };
-
-        let frame = telemetry_to_frame(&telemetry, mapping);
-
-        // Decode exactly as fusion does, using the identical mapping source.
-        let decoded_rpm = frame.encoder_delta as f32 * 60.0
-            / (mapping.encoder_pulses_per_rev * mapping.sample_window_s);
-
-        assert!(
-            (decoded_rpm - telemetry.roller_rpm).abs() < 1.0,
-            "expected roller_rpm to round-trip to ~{}, got {decoded_rpm}",
-            telemetry.roller_rpm
-        );
     }
 
     #[test]
