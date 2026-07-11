@@ -135,11 +135,10 @@ impl App {
         let storage_task = StorageTask::spawn(storage.clone(), live_rx.clone());
 
         // Suspend/resume gate between the live serial reader and anything
-        // needing exclusive port access (ESP32 flashing). In replay mode no
-        // reader ever runs, so seed `actual` released so a flash suspend
-        // resolves instantly.
-        let (serial_gate_handle, serial_gate_worker) =
-            serial_gate(config.source_mode == SourceMode::Live);
+        // needing exclusive port access (ESP32 flashing). Seed `actual=false`
+        // and let the reader publish true only once it has successfully opened
+        // the port.
+        let (serial_gate_handle, serial_gate_worker) = serial_gate(false);
 
         let api = ApiTask::spawn(
             &config.api_bind,
