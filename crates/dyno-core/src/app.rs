@@ -214,6 +214,7 @@ impl App {
                     config.arm_rpm,
                     config.record_rpm,
                     config.stop_rpm,
+                    config.engine_noise_mains_hz,
                 );
                 (Some(serial), Some(can), None, None, Some(fusion))
             }
@@ -296,6 +297,7 @@ mod tests {
             arm_rpm: 1500.0,
             record_rpm: 2000.0,
             stop_rpm: 1000.0,
+            engine_noise_mains_hz: 50.0,
         }
     }
 

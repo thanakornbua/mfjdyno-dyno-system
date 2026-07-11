@@ -122,6 +122,14 @@ pub struct Config {
     /// Deprecated/no-op compatibility setting. Runs are operator-bounded now;
     /// RPM below `record_rpm` pauses collection instead of stopping the run.
     pub stop_rpm: f32,
+
+    // ── Noise rejection ──────────────────────────────────────────────────────
+    /// Mains frequency (Hz) used to reject phantom engine RPM from a floating
+    /// ignition input picking up mains hum. When the engine reads a harmonic of
+    /// this frequency *and* the roller is stationary, the reading is treated as
+    /// noise and suppressed. Set to `0` to disable. Default 50 (TH/EU mains);
+    /// use 60 for NA mains.
+    pub engine_noise_mains_hz: f32,
 }
 
 const DEFAULT_DB_PATH: &str = "dyno.db";
@@ -182,6 +190,7 @@ impl Config {
             arm_rpm:              env_parse("DYNO_ARM_RPM",          1500.0f32),
             record_rpm:           env_parse("DYNO_RECORD_RPM",       2000.0f32),
             stop_rpm:             env_parse("DYNO_STOP_RPM",         1000.0f32),
+            engine_noise_mains_hz: env_parse("DYNO_ENGINE_NOISE_MAINS_HZ", 50.0f32),
         })
     }
 }
@@ -211,7 +220,8 @@ impl fmt::Display for Config {
         writeln!(f, "  ui_broadcast_rate_hz = {}", self.ui_broadcast_rate_hz)?;
         writeln!(f, "  arm_rpm              = {}", self.arm_rpm)?;
         writeln!(f, "  record_rpm           = {}", self.record_rpm)?;
-        write!(f,   "  stop_rpm             = {}", self.stop_rpm)
+        writeln!(f, "  stop_rpm             = {}", self.stop_rpm)?;
+        write!(f,   "  engine_noise_mains_hz = {}", self.engine_noise_mains_hz)
     }
 }
 

@@ -51,6 +51,44 @@ impl FusionPhysicsConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct RunThresholds {
     record_rpm: f32,
+    /// Mains frequency (Hz) for phantom-RPM rejection; `0` disables. See
+    /// [`reject_mains_noise`].
+    mains_noise_hz: f32,
+}
+
+/// Half-width (RPM) of the band around each mains harmonic treated as noise.
+/// Wide enough to catch mains hum (which is rock-steady) without reaching a
+/// real engine holding a nearby RPM.
+const MAINS_NOISE_BAND_RPM: f32 = 120.0;
+
+/// True if `rpm` sits within [`MAINS_NOISE_BAND_RPM`] of an integer harmonic of
+/// the mains fundamental (`mains_hz * 60` RPM). A floating ignition input reads
+/// mains hum as a steady harmonic (e.g. 50 Hz → 3000/6000/9000 RPM).
+fn is_mains_harmonic(rpm: f32, mains_hz: f32) -> bool {
+    if mains_hz <= 0.0 || !rpm.is_finite() {
+        return false;
+    }
+    let fundamental = mains_hz * 60.0;
+    if rpm < fundamental * 0.5 {
+        return false;
+    }
+    let nearest = (rpm / fundamental).round() * fundamental;
+    (rpm - nearest).abs() <= MAINS_NOISE_BAND_RPM
+}
+
+/// Suppress an engine RPM reading that is almost certainly mains hum on a
+/// floating ignition input: it lands on a mains harmonic *and* the roller is
+/// stationary. The roller guard is what keeps this from ever touching a real
+/// pull — during a pull the roller is always turning.
+fn reject_mains_noise(
+    engine_rpm: Option<f32>,
+    roller_stationary: bool,
+    mains_hz: f32,
+) -> Option<f32> {
+    match engine_rpm {
+        Some(rpm) if roller_stationary && is_mains_harmonic(rpm, mains_hz) => None,
+        other => other,
+    }
 }
 
 /// Converts the latest ESP32 frame into a frontend-ready `LiveFrame`.
@@ -78,6 +116,7 @@ impl FusionTask {
         _arm_rpm: f32,
         record_rpm: f32,
         _stop_rpm: f32,
+        engine_noise_mains_hz: f32,
     ) -> Self {
         let task = Self {
             frame_rx,
@@ -89,6 +128,7 @@ impl FusionTask {
             run_control,
             run_thresholds: RunThresholds {
                 record_rpm,
+                mains_noise_hz: engine_noise_mains_hz,
             },
         };
 
@@ -139,11 +179,21 @@ async fn fusion_task_loop(
                     FusionPhysicsConfig::from_calibration(&calibration)
                 };
                 let runtime_state = run_control.snapshot().await;
-                let runtime_engine_rpm = if input.signal_flags & SIG_ENGINE_VALID != 0 {
+                // A stationary roller (no valid roller signal, or zero encoder
+                // movement this window) is the guard that lets us treat a
+                // mains-harmonic engine reading as phantom noise.
+                let roller_stationary =
+                    input.signal_flags & SIG_ROLLER_VALID == 0 || input.encoder_delta == 0;
+                let raw_engine_rpm = if input.signal_flags & SIG_ENGINE_VALID != 0 {
                     engine_rpm_from_period(input.engine_period_us)
                 } else {
                     None
                 };
+                let runtime_engine_rpm = reject_mains_noise(
+                    raw_engine_rpm,
+                    roller_stationary,
+                    run_thresholds.mains_noise_hz,
+                );
                 let run_state = next_run_state(
                     runtime_state.started,
                     runtime_engine_rpm,
@@ -158,6 +208,7 @@ async fn fusion_task_loop(
                     physics,
                     &mut physics_state,
                     run_state,
+                    run_thresholds.mains_noise_hz,
                 );
                 let ambient = ambient.sanitized();
                 let correction = correction_factor(
@@ -215,6 +266,7 @@ fn fuse_frame(
     physics: FusionPhysicsConfig,
     physics_state: &mut PhysicsState,
     run_state: RunState,
+    mains_noise_hz: f32,
 ) -> LiveFrame {
     let esp32_status = build_esp32_status(frame);
     let ambient = ambient.sanitized();
@@ -225,7 +277,7 @@ fn fuse_frame(
         ambient.humidity_pct,
     );
 
-    let engine_rpm = if esp32_status.engine_signal_valid {
+    let raw_engine_rpm = if esp32_status.engine_signal_valid {
         engine_rpm_from_period(frame.engine_period_us)
     } else {
         None
@@ -240,6 +292,11 @@ fn fuse_frame(
     } else {
         None
     };
+    // Reject phantom engine RPM (mains hum on a floating ignition input) when
+    // the roller is stationary. Kept consistent with the run-state machine,
+    // which gates the same reading in the fusion loop.
+    let roller_stationary = roller_rpm.map_or(true, |rpm| !(rpm > 0.0));
+    let engine_rpm = reject_mains_noise(raw_engine_rpm, roller_stationary, mains_noise_hz);
     let roller_omega_rad_s = roller_rpm
         .map(rpm_to_rad_s)
         .filter(|omega| omega.is_finite() && *omega > 0.0);
@@ -448,7 +505,7 @@ fn o2_alert_from_afr(afr: Option<f32>) -> AlertLevel {
 mod tests {
     use super::*;
     fn thresholds() -> RunThresholds {
-        RunThresholds { record_rpm: 2_000.0 }
+        RunThresholds { record_rpm: 2_000.0, mains_noise_hz: 0.0 }
     }
 
     fn sample_frame() -> DynoFrameV1 {
@@ -470,6 +527,76 @@ mod tests {
             fault_flags: 0,
             crc16: 0,
         }
+    }
+
+    #[test]
+    fn mains_harmonic_detection_matches_hum_but_not_real_rpm() {
+        // 50 Hz mains → 3000/6000/9000 RPM harmonics.
+        assert!(is_mains_harmonic(6_000.0, 50.0));
+        assert!(is_mains_harmonic(3_000.0, 50.0));
+        assert!(is_mains_harmonic(6_008.0, 50.0)); // within band
+        assert!(!is_mains_harmonic(6_300.0, 50.0)); // off-harmonic real RPM
+        assert!(!is_mains_harmonic(4_500.0, 50.0));
+        assert!(!is_mains_harmonic(6_000.0, 0.0)); // disabled
+        // 60 Hz mains → 3600/7200 RPM.
+        assert!(is_mains_harmonic(7_200.0, 60.0));
+        assert!(!is_mains_harmonic(6_000.0, 60.0));
+    }
+
+    #[test]
+    fn reject_mains_noise_only_when_roller_stationary() {
+        // Phantom 6000 RPM with a stopped roller is suppressed…
+        assert_eq!(reject_mains_noise(Some(6_000.0), true, 50.0), None);
+        // …but the same RPM with the roller turning (a real pull) is kept.
+        assert_eq!(reject_mains_noise(Some(6_000.0), false, 50.0), Some(6_000.0));
+        // Non-harmonic RPM is always kept.
+        assert_eq!(reject_mains_noise(Some(6_300.0), true, 50.0), Some(6_300.0));
+        // Disabled gate keeps everything.
+        assert_eq!(reject_mains_noise(Some(6_000.0), true, 0.0), Some(6_000.0));
+    }
+
+    #[test]
+    fn fuse_frame_suppresses_mains_hum_with_stationary_roller() {
+        // Nothing connected: engine reads a 50 Hz harmonic, roller not moving.
+        let mut frame = sample_frame();
+        frame.signal_flags = SIG_ENGINE_VALID; // no roller signal
+        frame.encoder_delta = 0;
+        frame.engine_period_us = 10_000; // 6000 RPM
+
+        let live = fuse_frame(
+            &frame,
+            AmbientSample::stub(),
+            &CanSample::missing(),
+            CorrectionMode::None,
+            FusionPhysicsConfig {
+                roller_diameter_m: 0.318,
+                encoder_pulses_per_rev: 60.0,
+                sample_window_s: 0.1,
+                roller_inertia_kg_m2: 3.5,
+            },
+            &mut PhysicsState::default(),
+            RunState::Idle,
+            50.0,
+        );
+        assert_eq!(live.engine_rpm, None, "mains hum should be suppressed");
+
+        // With the mains gate disabled the same reading passes through.
+        let live_disabled = fuse_frame(
+            &frame,
+            AmbientSample::stub(),
+            &CanSample::missing(),
+            CorrectionMode::None,
+            FusionPhysicsConfig {
+                roller_diameter_m: 0.318,
+                encoder_pulses_per_rev: 60.0,
+                sample_window_s: 0.1,
+                roller_inertia_kg_m2: 3.5,
+            },
+            &mut PhysicsState::default(),
+            RunState::Idle,
+            0.0,
+        );
+        assert!(live_disabled.engine_rpm.unwrap() > 5_000.0);
     }
 
     #[test]
@@ -495,6 +622,7 @@ mod tests {
             },
             &mut physics_state,
             RunState::Idle,
+            0.0,
         );
 
         assert!(live.engine_rpm.unwrap() > 0.0);
@@ -533,6 +661,7 @@ mod tests {
             },
             &mut PhysicsState::default(),
             RunState::Idle,
+            0.0,
         );
 
         assert_eq!(live.engine_rpm, None);
@@ -646,6 +775,7 @@ mod tests {
             physics,
             &mut PhysicsState::default(),
             RunState::Idle,
+            0.0,
         );
 
         assert!(live.engine_rpm.is_some(), "engine_rpm should not be null");
