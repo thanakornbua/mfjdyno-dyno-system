@@ -26,7 +26,7 @@ if (osName.contains('win')) {
 } else if (osName.contains('mac')) {
     javafxPlatform = isArm64 ? 'mac-aarch64' : 'mac'
 } else {
-    javafxPlatform = 'linux'
+    javafxPlatform = isArm64 ? 'linux-aarch64' : 'linux'
 }
 
 // ---- Source sets --------------------------------------------------------------

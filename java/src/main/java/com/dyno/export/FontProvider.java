@@ -21,6 +21,7 @@ import java.nio.file.Paths;
 public final class FontProvider {
     private static final String[] FONT_CANDIDATES = {
         "/fonts/Sarabun-Regular.ttf",
+        "/opt/dyno-operator-console/fonts/Sarabun-Regular.ttf",
         "/home/mfjdyno/.local/share/fonts/Sarabun-Regular.ttf",
         "../app/dashboard/fonts/Sarabun-Regular.ttf",
         "/app/dashboard/fonts/Sarabun-Regular.ttf"
