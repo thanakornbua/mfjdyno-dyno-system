@@ -27,7 +27,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║          Dyno System Installation v${VERSION}           ║"
+echo "║             Dyno System Installation v${VERSION}              ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -55,17 +55,11 @@ else
     done
     SRC_DIR="$(mktemp -d /tmp/dyno-system-src.XXXXXX)"
     CLEANUP_SRC_DIR="$SRC_DIR"
+    trap 'if [ -n "$CLEANUP_SRC_DIR" ] && [ -d "$CLEANUP_SRC_DIR" ]; then rm -rf "$CLEANUP_SRC_DIR"; fi' EXIT
     git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$SRC_DIR"
     echo -e "${GREEN}✓ Source fetched to $SRC_DIR${NC}"
 fi
 echo ""
-
-cleanup() {
-    if [ -n "$CLEANUP_SRC_DIR" ] && [ -d "$CLEANUP_SRC_DIR" ]; then
-        rm -rf "$CLEANUP_SRC_DIR"
-    fi
-}
-trap cleanup EXIT
 
 cd "$SRC_DIR"
 
@@ -80,11 +74,42 @@ apt-get install -y \
     curl \
     ca-certificates \
     can-utils \
-    openjdk-21-jdk-headless \
     fonts-thai-tlwg \
     fonts-noto-cjk \
     >/dev/null
+
+# GUI runtime libraries for the JavaFX console (package names vary per
+# release, and a headless box can live without them — best effort).
+apt-get install -y libgtk-3-0 libgl1 libxtst6 >/dev/null 2>&1 || \
+    apt-get install -y libgtk-3-0t64 libgl1 libxtst6 >/dev/null 2>&1 || true
 echo -e "${GREEN}✓ System packages installed${NC}"
+
+# Java 21: from the distro when it ships it, otherwise Temurin from the
+# Adoptium repository (e.g. Debian bookworm / Raspberry Pi OS has no
+# openjdk-21 package).
+if ! apt-get install -y openjdk-21-jdk-headless >/dev/null 2>&1; then
+    echo -e "${YELLOW}→ openjdk-21 not in distro repos — adding Adoptium (Temurin) repository...${NC}"
+    install -d -m 0755 /etc/apt/keyrings
+    curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
+        -o /etc/apt/keyrings/adoptium.asc
+    . /etc/os-release
+    echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb ${VERSION_CODENAME} main" \
+        > /etc/apt/sources.list.d/adoptium.list
+    apt-get update -qq
+    apt-get install -y temurin-21-jdk >/dev/null
+fi
+
+# Pin the build and runtime to a Java 21 VM even when an older default JDK
+# is installed alongside it.
+JAVA21_HOME="$(find /usr/lib/jvm -maxdepth 1 -type d \( -name '*-21-*' -o -name '*-21' -o -name 'temurin-21-*' \) 2>/dev/null | sort | head -1)"
+if [ -n "$JAVA21_HOME" ]; then
+    export JAVA_HOME="$JAVA21_HOME"
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+if ! command -v java >/dev/null 2>&1; then
+    echo -e "${RED}✗ No Java runtime found after installation — cannot continue${NC}"
+    exit 1
+fi
 
 # Rust toolchain (needed to build dyno-core)
 if ! command -v cargo &> /dev/null; then
@@ -105,6 +130,8 @@ if ! id -u dyno &> /dev/null; then
     echo -e "${GREEN}✓ 'dyno' user created${NC}"
     echo ""
 fi
+# Serial adapters (/dev/ttyUSB*, /dev/ttyACM*) are group 'dialout'
+usermod -aG dialout dyno 2>/dev/null || true
 
 # Build backend
 echo -e "${YELLOW}→ Building backend (dyno-core)...${NC}"
@@ -126,9 +153,9 @@ mkdir -p /opt/dyno-operator-console
 echo -e "${GREEN}✓ Directories created${NC}"
 echo ""
 
-# Install backend binary
+# Install backend binary (the dyno-core crate's [[bin]] is named "dynod")
 echo -e "${YELLOW}→ Installing backend (dynod)...${NC}"
-cp target/release/dyno-core "$INSTALL_PREFIX/bin/dynod"
+cp target/release/dynod "$INSTALL_PREFIX/bin/dynod"
 chmod 755 "$INSTALL_PREFIX/bin/dynod"
 echo -e "${GREEN}✓ Backend installed to $INSTALL_PREFIX/bin/dynod${NC}"
 echo ""
@@ -147,6 +174,17 @@ rm -rf /opt/dyno-operator-console
 mkdir -p /opt/dyno-operator-console
 cp -r "$CONSOLE_EXTRACTED_DIR"/* /opt/dyno-operator-console/
 rm -rf "$CONSOLE_TMP"
+if [ ! -d /opt/dyno-operator-console/lib ]; then
+    echo -e "${RED}✗ Console lib directory missing after install${NC}"
+    exit 1
+fi
+# The canonical runner: puts the JavaFX jars on the module path, which a
+# plain classpath launch of an Application subclass cannot do.
+install -m 755 deploy/bin/run-dyno-operator-console.sh \
+    /opt/dyno-operator-console/bin/run-dyno-operator-console.sh
+# Sarabun font for PDF export (FontProvider searches this path)
+mkdir -p /opt/dyno-operator-console/fonts
+cp app/dashboard/fonts/Sarabun-Regular.ttf /opt/dyno-operator-console/fonts/
 echo -e "${GREEN}✓ Operator console installed to /opt/dyno-operator-console${NC}"
 echo ""
 
@@ -155,8 +193,12 @@ echo -e "${YELLOW}→ Installing systemd services...${NC}"
 cp deploy/systemd/dyno-canable.service /etc/systemd/system/
 cp deploy/systemd/dynod.service /etc/systemd/system/
 cp deploy/systemd/dyno-operator-console.service /etc/systemd/system/
-systemctl daemon-reload
-echo -e "${GREEN}✓ Systemd services installed${NC}"
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    echo -e "${GREEN}✓ Systemd services installed${NC}"
+else
+    echo -e "${YELLOW}→ systemd is not running (container/chroot?) — unit files installed, reload skipped${NC}"
+fi
 echo ""
 
 # Copy environment files
@@ -192,15 +234,24 @@ EOF
 else
     echo -e "${YELLOW}→ $CONFIG_DIR/operator-console.env already exists (skipped)${NC}"
 fi
+
+# Make the console run on the Java 21 VM even if the system default is older
+if [ -n "${JAVA21_HOME:-}" ] && ! grep -q '^JAVA_BIN=' "$CONFIG_DIR/operator-console.env"; then
+    echo "JAVA_BIN=$JAVA21_HOME/bin/java" >> "$CONFIG_DIR/operator-console.env"
+fi
 echo ""
 
 # Create launcher script
 echo -e "${YELLOW}→ Creating launcher script...${NC}"
 cat > "$INSTALL_PREFIX/bin/dyno-operator-console" << 'EOF'
 #!/bin/bash
-. /etc/dyno/operator-console.env
+# set -a exports everything the env file assigns, so the java process
+# actually sees the DYNO_UI_* configuration.
+set -a
+[ -f /etc/dyno/operator-console.env ] && . /etc/dyno/operator-console.env
+set +a
 export DISPLAY="${DISPLAY:-:0}"
-exec /opt/dyno-operator-console/bin/operator-console "$@"
+exec /opt/dyno-operator-console/bin/run-dyno-operator-console.sh "$@"
 EOF
 chmod 755 "$INSTALL_PREFIX/bin/dyno-operator-console"
 echo -e "${GREEN}✓ Launcher created at $INSTALL_PREFIX/bin/dyno-operator-console${NC}"
